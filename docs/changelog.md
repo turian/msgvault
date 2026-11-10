@@ -6,6 +6,10 @@ description: Release history for msgvault
 
 All notable changes to msgvault, grouped by release.
 
+## Unreleased
+
+- Person fact claims show their kind and whether supporting evidence is fresh, stale, or expired. The CLI and HTTP API expose the same metadata.
+
 ## 0.25.0
 <small>2026-11-14</small>
 
