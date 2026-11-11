@@ -10,6 +10,8 @@ All notable changes to msgvault, grouped by release.
 
 - Owner MCP sessions can list staged deletion batches and inspect their lifecycle receipts without enabling writes.
 
+- Open linked calendar copies and notes with `msgvault meetings links`, `GET /api/v1/meetings/record`, or MCP `get_meeting_record`. Copy an occurrence reference from `msgvault calendar events` to select a specific week.
+
 ## 0.24.0
 <small>2026-11-13</small>
 
