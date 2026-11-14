@@ -134,7 +134,7 @@ func decodeCalendarProjection(stored []byte, compression sql.NullString, metadat
 }
 
 func calendarRecurrenceEnd(ctx context.Context, event calevent.Event) *time.Time {
-	if event.Kind != calendarSeriesKind {
+	if event.Kind != "series" {
 		return nil
 	}
 	set, duration, days, err := prepareCalendarRecurrence(event)
