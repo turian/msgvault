@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"net/http"
@@ -22,8 +21,7 @@ type daemonMCPNamedPeopleBrowser struct {
 }
 
 func (b daemonMCPNamedPeopleBrowser) PromoteWithDisplayName(ctx context.Context, participantID int64, name *string) (*mcpserver.OperationResult, error) {
-	result, err := readMCPOperationJSON[generated.Person](ctx, b.client, http.MethodPost, "/api/v1/people", &generated.CreatePersonRequestOptions{Body: &generated.CreatePersonBody{ParticipantID: participantID, DisplayName: name}}, http.StatusOK, http.StatusCreated)
-	return personIDProjection(result, true), err
+	return readMCPOperationJSON[generated.Person](ctx, b.client, http.MethodPost, "/api/v1/people", &generated.CreatePersonRequestOptions{Body: &generated.CreatePersonBody{ParticipantID: participantID, DisplayName: name}}, http.StatusOK, http.StatusCreated)
 }
 
 func supportsNamedPromotion(capabilities *apiprotocol.MCPCapabilities) bool {
@@ -203,26 +201,14 @@ func personEditProjection(result *mcpserver.OperationResult, writes bool) *mcpse
 	if result == nil || result.IsError {
 		return result
 	}
-	result = personIDProjection(result, writes)
-	if result.IsError {
-		return result
-	}
 	person, ok := result.Output.(generated.Person)
-	if !ok || result.ETag == "" {
+	if !ok {
+		return invalidOperationResponse(writes)
+	}
+	if result.ETag == "" {
 		return invalidOperationResponse(writes)
 	}
 	result.Output = mcpserver.PersonEditContext{ETag: result.ETag, Person: person}
-	return result
-}
-
-func personIDProjection(result *mcpserver.OperationResult, writes bool) *mcpserver.OperationResult {
-	if result == nil || result.IsError {
-		return result
-	}
-	person, ok := result.Output.(generated.Person)
-	if !ok || person.ID <= 0 {
-		return invalidOperationResponse(writes)
-	}
 	return result
 }
 
@@ -248,7 +234,7 @@ func slackPolicyProjection(result *mcpserver.OperationResult, writes bool) *mcps
 		if !selected {
 			continue
 		}
-		if _, duplicate := found[setting.Key]; duplicate || !usableSlackSetting(setting, expectedKind) {
+		if _, duplicate := found[setting.Key]; writes && (duplicate || !usableSlackSetting(setting, expectedKind)) {
 			return invalidOperationResponse(writes)
 		}
 		found[setting.Key] = struct{}{}
@@ -256,7 +242,7 @@ func slackPolicyProjection(result *mcpserver.OperationResult, writes bool) *mcps
 		setting.CredentialID = nil
 		policy.Settings = append(policy.Settings, setting)
 	}
-	if len(found) != len(slackSelectionKinds) {
+	if writes && len(found) != len(slackSelectionKinds) {
 		return invalidOperationResponse(writes)
 	}
 	result.Output = policy
@@ -264,26 +250,16 @@ func slackPolicyProjection(result *mcpserver.OperationResult, writes bool) *mcps
 }
 
 func usableSlackSetting(setting generated.Setting, expectedKind generated.SettingKind) bool {
-	if setting.Kind != expectedKind || setting.Validate() != nil || setting.Value == nil || setting.Value.SettingValue_OneOf == nil {
-		return false
-	}
-	var variants map[string]jsontext.Value
-	if err := json.Unmarshal(setting.Value.SettingValue_OneOf.Raw(), &variants); err != nil || len(variants) != 1 {
+	if setting.Kind != expectedKind || setting.Value == nil || setting.Value.SettingValue_OneOf == nil {
 		return false
 	}
 	switch expectedKind {
 	case generated.Boolean:
-		if _, ok := variants["boolean"]; !ok {
-			return false
-		}
 		var value struct {
 			Boolean *bool `json:"boolean"`
 		}
 		return json.Unmarshal(setting.Value.SettingValue_OneOf.Raw(), &value) == nil && value.Boolean != nil
 	case generated.StringArray:
-		if _, ok := variants["strings"]; !ok {
-			return false
-		}
 		var value struct {
 			Strings *[]string `json:"strings"`
 		}
