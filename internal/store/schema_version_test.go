@@ -120,6 +120,25 @@ func TestSchemaVersionCandidateRightIndexUpgrade(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestSchemaVersionCalendarSeriesIndexUpgrade(t *testing.T) {
+	require := require.New(t)
+	f := storetest.New(t)
+	ctx := t.Context()
+	_, err := f.Store.DB().ExecContext(ctx, `DROP INDEX idx_calendar_events_series_provider_id`)
+	require.NoError(err)
+	_, err = f.Store.DB().ExecContext(ctx, `UPDATE archive_metadata SET value = '42' WHERE key = 'schema_version'`)
+	require.NoError(err)
+	require.NoError(f.Store.InitSchemaContext(ctx))
+	require.NoError(f.Store.InitSchemaContext(ctx))
+	query := `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_calendar_events_series_provider_id'`
+	if f.Store.IsPostgreSQL() {
+		query = `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_calendar_events_series_provider_id'`
+	}
+	var count int
+	require.NoError(f.Store.DB().QueryRowContext(ctx, query).Scan(&count))
+	require.Equal(1, count)
+}
+
 func TestSchemaVersionDocbankUpgrade(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -340,7 +359,7 @@ var (
 		40: "a26d72acc985ec3ca25ab69f8173b6fc2fb050f26298e162a0cc1358abeda0f9",
 		41: "87805b27cac30a9b23f779a8bec0c9d5bf5d5cc463b286fb63f645e60567aa56",
 		42: "d59c2905aca47c18220182ebf5ada7a8e781f5bda3d2cb65d6bdd6d66fd2d936",
-		43: "ad5e46104eedc5c5cbc902203aac73fa775e3ee727da30d5fb9a8cc59370b709",
+		43: "ad770bf7ab5addcfebeb63ad52273d9ac51ed3cb6d98aadbd808bc3172e81290",
 	}
 	schemaContractPostgresDigests = []string{
 		1:  "7c554ff06468af9bf30950e6e4f2954b52f84d7dd0e6708f4fdd932fda007ed3",
@@ -380,7 +399,7 @@ var (
 		40: "fd168ca80dd687aba404bf05be9a932eb5530303b9ac0cd73f91cc7ee01c14f2",
 		41: "f5438190c64d99d1f9d8f85e6a2d0508a8296aae5dfc5b389c5a1dc3e16c59d6",
 		42: "f3cc0baedce3bb1638cc4a4ecf5443039c176fd069c25975397bb35c41c26167",
-		43: "f5645d1dfa70e30ff631d79214553bcf74316ffbc5ae4144df5a6cc2c82ca643",
+		43: "b9b15cd3d25df6a25596a845ab19e8b6ad2a51fb3ca5f2756dbb32d6abdf44f9",
 	}
 )
 
