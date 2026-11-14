@@ -8,6 +8,8 @@ All notable changes to msgvault, grouped by release.
 
 ## Unreleased
 
+- Find overlapping meeting notes and calendar events with `meetings suggest`, the API, or MCP, then link the copies you choose.
+
 - Join or separate archived meeting copies with `meetings link` and `meetings unlink`, the API, or MCP. Choices survive sync and rebuilds. `meetings reset-link` restores automatic matching. Requires HTTP API schema 5.5.0; existing archives upgrade to schema 44.
 
 - MCP owners can export one person's messages as native JSONL. Encoded responses are capped at 512 KiB.

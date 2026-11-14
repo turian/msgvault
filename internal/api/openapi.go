@@ -419,6 +419,7 @@ import (
 // 5.3.0 adds the IMAP authentication method to CLI accounts.
 // 5.4.0 adds meeting records.
 // 5.5.0 adds owner meeting link decisions.
+// 5.6.0 adds meeting link suggestions.
 const APISchemaVersion = "5.5.0"
 
 // OpenAPIDocument builds the API schema from the same Huma route registration
