@@ -27,48 +27,57 @@ import (
 
 func TestMCPOperationResponseFailures(t *testing.T) {
 	t.Parallel()
+	settings := func(ctx context.Context, client *daemonclient.Client, method, path string) (*mcpserver.OperationResult, error) {
+		result, err := readMCPOperationJSON[slackSettingsResponse](ctx, client, method, path, nil, http.StatusOK)
+		return slackPolicyProjection(result, true), err
+	}
+	person := func(ctx context.Context, client *daemonclient.Client, method, path string) (*mcpserver.OperationResult, error) {
+		return readMCPOperationJSON[generated.Person](ctx, client, method, path, nil, http.StatusOK)
+	}
 	for _, tt := range []struct {
-		name, method, body, want string
-		status                   int
-		interrupted, wantErr     bool
+		name, method, body, want, path string
+		status                         int
+		interrupted, wantErr           bool
+		read                           func(context.Context, *daemonclient.Client, string, string) (*mcpserver.OperationResult, error)
 	}{
 		{"post-commit credential conflict", http.MethodPatch, `{"error":"credential_conflict"}`,
-			`{"error":"operation_refused","operation_may_have_completed":true}`, http.StatusPreconditionFailed, false, false},
+			`{"error":"operation_refused","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusPreconditionFailed, false, false, settings},
 		{"unclassified server failure", http.MethodPost, `{"error":"settings_write_failed"}`,
-			`{"error":"operation_refused","operation_may_have_completed":true}`, http.StatusInternalServerError, false, false},
+			`{"error":"operation_refused","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusInternalServerError, false, false, settings},
 		{"known pre-commit conflict", http.MethodPatch, `{"error":"settings_conflict"}`,
-			`{"error":"settings_conflict","operation_may_have_completed":false}`, http.StatusPreconditionFailed, false, false},
+			`{"error":"settings_conflict","operation_may_have_completed":false}`, "/api/v1/settings", http.StatusPreconditionFailed, false, false, settings},
 		{"read failure", http.MethodGet, `{"error":"credential_conflict"}`,
-			`{"error":"operation_refused","operation_may_have_completed":false}`, http.StatusPreconditionFailed, false, false},
+			`{"error":"operation_refused","operation_may_have_completed":false}`, "/api/v1/settings", http.StatusPreconditionFailed, false, false, settings},
 		{"oversized successful write receipt", http.MethodPatch, `{"data":"` + strings.Repeat("x", 1<<20) + `"}`,
-			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, http.StatusOK, false, false},
+			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusOK, false, false, settings},
 		{"interrupted write receipt", http.MethodPatch, `{"partial":`,
-			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, http.StatusOK, true, true},
+			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusOK, true, true, settings},
 		{"interrupted error response", http.MethodPatch, `{"error":`,
-			`{"error":"operation_response_failed","operation_may_have_completed":true}`, http.StatusInternalServerError, true, true},
-		{"invalid write receipt", http.MethodPatch, `{}`,
-			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, http.StatusOK, false, false},
+			`{"error":"operation_response_failed","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusInternalServerError, true, true, settings},
+		{"person receipt without participant list", http.MethodPatch, `{"id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","vcard_uid":"example"}`,
+			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, "/api/v1/people/1", http.StatusOK, false, false, person},
 		{"malformed write receipt", http.MethodPatch, `not json`,
-			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, http.StatusOK, false, true},
+			`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, "/api/v1/settings", http.StatusOK, false, true, settings},
 		{"oversized read", http.MethodGet, strings.Repeat("x", (1<<20)+1),
-			`{"error":"operation_response_limit_exceeded","operation_may_have_completed":false}`, http.StatusOK, false, false},
+			`{"error":"operation_response_limit_exceeded","operation_may_have_completed":false}`, "/api/v1/settings", http.StatusOK, false, false, settings},
 		{"read validation failure", http.MethodGet, `{"error":"validation_failed"}`,
-			`{"error":"validation_failed","operation_may_have_completed":false}`, http.StatusUnprocessableEntity, false, false},
+			`{"error":"validation_failed","operation_may_have_completed":false}`, "/api/v1/settings", http.StatusUnprocessableEntity, false, false, settings},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			requirements, assertions := require.New(t), assert.New(t)
 			client := newMCPDaemonClient(t, func(w http.ResponseWriter, r *http.Request) {
 				assertions.Equal(tt.method, r.Method)
-				assertions.Equal("/api/v1/settings", r.URL.Path)
+				assertions.Equal(tt.path, r.URL.Path)
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("ETag", `"settings"`)
 				if tt.interrupted {
 					w.Header().Set("Content-Length", "100")
 				}
 				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
 			})
-			result, err := readMCPOperationJSON[generated.SettingsResponse](t.Context(), client, tt.method, "/api/v1/settings", nil, http.StatusOK)
+			result, err := tt.read(t.Context(), client, tt.method, tt.path)
 			if tt.wantErr {
 				requirements.Error(err)
 			} else {
@@ -81,18 +90,6 @@ func TestMCPOperationResponseFailures(t *testing.T) {
 			assertions.JSONEq(tt.want, string(encoded))
 		})
 	}
-	t.Run("person receipt without ID", func(t *testing.T) {
-		requirements, assertions := require.New(t), assert.New(t)
-		client := newMCPDaemonClient(t, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`{"id":0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","participant_ids":[],"vcard_uid":"example"}`))
-		})
-		result, err := readMCPOperationJSON[generated.Person](t.Context(), client, http.MethodPatch, "/api/v1/people/1", nil, http.StatusOK)
-		requirements.NoError(err)
-		requirements.True(result.IsError)
-		data, err := json.Marshal(result.Output)
-		requirements.NoError(err)
-		assertions.JSONEq(`{"error":"operation_receipt_unavailable","operation_may_have_completed":true}`, string(data))
-	})
 }
 
 func TestDaemonMCPLaunchDiscoversRealOperationalTools(t *testing.T) {
