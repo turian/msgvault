@@ -84,6 +84,38 @@ func meetingUIDKeys(uid string, at time.Time) []meetingLinkKey {
 	return []meetingLinkKey{canonicalMeetingKey("ical_uid", "", uid, &at)}
 }
 
+func meetingKeyMatch(key meetingLinkKey, matches []CalendarOccurrence) (ambiguous, allowNotes bool) {
+	identities := map[string]bool{}
+	for _, o := range matches {
+		if o.original.AllDay {
+			identities["date:"+o.original.Date] = true
+		} else if o.original != (calrecur.Identity{}) {
+			identities["time:"+o.original.Instant.UTC().Format(time.RFC3339Nano)] = true
+		} else if o.AllDay && !o.Start.IsZero() {
+			identities["date:"+o.StartDate] = true
+		} else if !o.Start.IsZero() {
+			identities["time:"+o.Start.UTC().Format(time.RFC3339Nano)] = true
+		}
+	}
+	_, _, instance := calrecur.ParseInstanceID(key[2])
+	return len(identities) > 1, key[0] != "google_event_id" || instance || len(identities) == 1 || len(identities) == 0 && len(matches) > 0
+}
+
+// meetingMatchGroup selects the copies and notes proved by one matching key.
+func meetingMatchGroup(key meetingLinkKey, matches []CalendarOccurrence, notes []int64, ambiguousNotes bool) ([]CalendarOccurrence, []int64) {
+	ambiguous, allowNotes := meetingKeyMatch(key, matches)
+	if ambiguous {
+		if allowNotes && ambiguousNotes {
+			return nil, notes
+		}
+		return nil, nil
+	}
+	if !allowNotes {
+		notes = nil
+	}
+	return matches, notes
+}
+
 // meetingBound reports an unavailable time as nil.
 func meetingBound(at time.Time) *time.Time {
 	if at.IsZero() {
@@ -308,15 +340,16 @@ func (s *Store) meetingNoteKeys(ctx context.Context, keys []string, budget *int)
 	return out, nil
 }
 
-func (s *Store) MeetingRecordContext(ctx context.Context, ref MeetingLinkRef) (MeetingRecord, error) {
-	return s.meetingRecordContext(ctx, ref, false)
-}
-
 func (s *Store) MeetingNotesContext(ctx context.Context, ref MeetingLinkRef) (MeetingRecord, error) {
-	return s.meetingRecordContext(ctx, ref, true)
+	budget := calrecur.RequestReadBudget
+	return s.meetingAutomaticRecord(ctx, ref, &budget, true)
 }
 
-func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, notesOnly bool) (MeetingRecord, error) {
+func (s *Store) meetingAutomaticRecordContext(ctx context.Context, ref MeetingLinkRef, budget *int) (MeetingRecord, error) {
+	return s.meetingAutomaticRecord(ctx, ref, budget, false)
+}
+
+func (s *Store) meetingAutomaticRecord(ctx context.Context, ref MeetingLinkRef, budget *int, notesOnly bool) (MeetingRecord, error) {
 	record := MeetingRecord{Links: []MeetingLink{}, MessageIDs: []int64{}, Unexpandable: []CalendarUnexpandable{}}
 	ctx, release, err := s.BeginReadSnapshotContext(ctx)
 	if err != nil {
@@ -330,10 +363,9 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 	if version > SchemaVersion {
 		return record, ErrMeetingProjectionUnavailable
 	}
-	budget := calrecur.RequestReadBudget
 	var keys []meetingLinkKey
 	var seed CalendarOccurrence
-	if ref.Kind == "msg" {
+	if ref.Kind == meetingRefMessage {
 		var raw sql.NullString
 		var version sql.NullInt64
 		scope, args := sourceScopeClause(ctx, "m.source_id")
@@ -353,7 +385,7 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 			keys = append(keys, key)
 		}
 	} else {
-		rows, err := s.meetingEventRows(ctx, `e.message_id = ?`, []any{ref.MessageID}, &budget)
+		rows, err := s.meetingEventRows(ctx, `e.message_id = ?`, []any{ref.MessageID}, budget)
 		if err != nil {
 			return record, err
 		}
@@ -382,7 +414,7 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 			seed, diagnostic = untimedMeetingCopy(row)
 			record.Unexpandable = append(record.Unexpandable, diagnostic)
 		} else {
-			page, err := s.meetingExpand(ctx, rows, at, &budget)
+			page, err := s.meetingExpand(ctx, rows, at, budget)
 			if err != nil {
 				return record, err
 			}
@@ -397,6 +429,25 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 				}
 			}
 		}
+		if seed.Ref == "" && row.Event.Kind == calendarSeriesKind && len(record.Unexpandable) > 0 {
+			edits, err := s.meetingEventRows(ctx, `m.source_id = ? AND e.series_provider_id = ? AND e.kind = 'exception'`, []any{row.SourceID, row.Event.ProviderEventID}, budget)
+			if err != nil {
+				return record, err
+			}
+			for _, edit := range edits {
+				if edit.Event.Original == nil || edit.Event.Original.Key() != ref.Identity.Key() {
+					continue
+				}
+				page, err := s.expandCalendarRows(ctx, []CalendarEventRow{edit}, at, at.Add(time.Second), false, budget)
+				if err != nil {
+					return record, err
+				}
+				if len(page.Occurrences) > 0 {
+					seed = page.Occurrences[0]
+					break
+				}
+			}
+		}
 		if seed.Ref == "" {
 			if row.Event.Kind != calendarSeriesKind || !slices.ContainsFunc(record.Unexpandable, func(item CalendarUnexpandable) bool { return item.MessageID == ref.MessageID }) {
 				return record, sql.ErrNoRows
@@ -407,7 +458,7 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 	}
 	if notesOnly {
 		if len(keys) > 0 && (keys[0][0] != "google_event_id" || isMeetingInstanceKey(keys[0])) {
-			notes, err := s.meetingNoteKeys(ctx, []string{keys[0].text()}, &budget)
+			notes, err := s.meetingNoteKeys(ctx, []string{keys[0].text()}, budget)
 			if err != nil {
 				return record, err
 			}
@@ -437,47 +488,17 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, no
 		if len(pending) == 0 {
 			break
 		}
-		notes, err := s.meetingNoteKeys(ctx, texts, &budget)
+		notes, err := s.meetingNoteKeys(ctx, texts, budget)
 		if err != nil {
 			return record, err
 		}
-		matches, err := s.meetingOccurrencesForKeys(ctx, pending, &budget, &record.Unexpandable)
+		matches, err := s.meetingOccurrencesForKeys(ctx, pending, budget, &record.Unexpandable)
 		if err != nil {
 			return record, err
 		}
 		for _, key := range pending {
-			matched := matches[key]
-			identities := map[string]bool{}
-			for _, o := range matched {
-				if o.original == (calrecur.Identity{}) && o.Start.IsZero() {
-					continue
-				}
-				if o.original.AllDay {
-					identities["date:"+o.original.Date] = true
-					continue
-				}
-				if o.original == (calrecur.Identity{}) && o.AllDay {
-					identities["date:"+o.StartDate] = true
-					continue
-				}
-				original := o.Start
-				if o.original != (calrecur.Identity{}) {
-					original = o.original.Instant
-				}
-				identities["time:"+original.UTC().Format(time.RFC3339Nano)] = true
-			}
-			_, _, instance := calrecur.ParseInstanceID(key[2])
-			allowNotes := key[0] != "google_event_id" || instance || len(identities) == 1 || len(identities) == 0 && len(matched) > 0
-			if len(identities) > 1 {
-				// Notes with exact keys remain peers even if calendar matches are ambiguous.
-				if allowNotes && ref.Kind == "msg" && len(copies) == 0 {
-					record.MessageIDs = append(record.MessageIDs, notes[key.text()]...)
-				}
-				continue
-			}
-			if allowNotes {
-				record.MessageIDs = append(record.MessageIDs, notes[key.text()]...)
-			}
+			matched, members := meetingMatchGroup(key, matches[key], notes[key.text()], ref.Kind == meetingRefMessage && len(copies) == 0)
+			record.MessageIDs = append(record.MessageIDs, members...)
 			copies = append(copies, matched...)
 			for _, occurrence := range matched {
 				keys = append(keys, occurrenceKeys(occurrence)...)
