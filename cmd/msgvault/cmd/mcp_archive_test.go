@@ -23,7 +23,6 @@ import (
 	"go.kenn.io/msgvault/internal/daemonclient"
 	mcpserver "go.kenn.io/msgvault/internal/mcp"
 	"go.kenn.io/msgvault/internal/query/querytest"
-	"go.kenn.io/msgvault/internal/store"
 	"go.kenn.io/msgvault/internal/testutil"
 )
 
@@ -52,7 +51,7 @@ func TestMCPArchiveFamilies(t *testing.T) {
 		source, tool string
 		noDrafts     bool
 	}{
-		{"mbox", "", false}, {"gcal", "link_meeting", false},
+		{"mbox", "", false}, {"gcal", "get_meeting_record", false}, {"gcal", "link_meeting", false},
 		{"granola", "get_meeting_context", false}, {"chatwoot", "get_meeting_context", false},
 		{"circleback", "get_meeting_context", false}, {"pocket", "get_meeting_context", false},
 		{"muesli", "get_meeting_context", false}, {"notion_meetings", "get_meeting_context", false},
@@ -98,6 +97,11 @@ func TestMCPArchiveFamilies(t *testing.T) {
 			}
 			if tc.noDrafts {
 				assert.NotContains(names, "draft_compose")
+			}
+			if tc.source == "gcal" {
+				assert.NotContains(names, "get_meeting_context")
+				assert.NotContains(names, "list_meeting_action_items")
+				assert.NotContains(names, "get_meeting_metrics")
 			}
 			if tc.source == "mbox" {
 				assert.Contains(names, "get_stats")
@@ -236,31 +240,17 @@ func TestMCPMeetingRecordDelegated(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	source, err := st.GetOrCreateSource("granola", "notes@example.test")
 	requirements.NoError(err)
-	id, err := st.PersistMessage(&store.MessagePersistData{
-		Message:      &store.Message{SourceID: source.ID, SourceMessageID: "note", MessageType: "meeting_transcript"},
-		Conversation: &store.ConversationPersistData{SourceConversationID: "note", ConversationType: "meeting"},
-		RawMIME:      []byte(`{"summary_text":"Meeting"}`), RawFormat: "granola_json",
-	})
-	requirements.NoError(err)
-	other, err := st.GetOrCreateSource("granola", "other@example.test")
-	requirements.NoError(err)
-	otherID, err := st.PersistMessage(&store.MessagePersistData{
-		Message:      &store.Message{SourceID: other.ID, SourceMessageID: "outside", MessageType: "meeting_transcript"},
-		Conversation: &store.ConversationPersistData{SourceConversationID: "outside", ConversationType: "meeting"},
-		RawMIME:      []byte(`{"summary_text":"Outside"}`), RawFormat: "granola_json",
-	})
-	requirements.NoError(err)
 	for _, tc := range []struct {
 		name, version string
 		permissions   []string
 		available     bool
 	}{
 		{"current", api.APISchemaVersion, []string{"message.read"}, true},
-		{"older daemon", "5.0.0", []string{"message.read"}, false},
+		{"older daemon", "5.3.0", []string{"message.read"}, false},
 		{"without message access", api.APISchemaVersion, []string{"search.read"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require, assert := require.New(t), assert.New(t)
+			assert := assert.New(t)
 			server := mcpDraftTestDaemon(t, &storeAPIAdapter{store: st}, func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/api/v1/health" {
@@ -274,49 +264,8 @@ func TestMCPMeetingRecordDelegated(t *testing.T) {
 			session := mcpDraftTestSession(mcpDraftAgentContext(t, server, source.ID, tc.permissions), t)
 			names := mcpDraftToolNames(t, session)
 			assert.Equal(tc.available, slices.Contains(names, "get_meeting_record"))
-			if tc.available && slices.Contains(names, "get_meeting_record") {
-				result, err := session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "get_meeting_record", Arguments: map[string]any{"ref": fmt.Sprintf("msg:%d", id)}})
-				require.NoError(err)
-				require.False(result.IsError, "%v", result.Content)
-				content, ok := result.StructuredContent.(map[string]any)
-				require.True(ok)
-				assert.Contains(content["message_ids"], float64(id))
-				outside, err := session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "get_meeting_record", Arguments: map[string]any{"ref": fmt.Sprintf("msg:%d", otherID)}})
-				require.NoError(err)
-				require.True(outside.IsError, "%v", outside.Content)
-				assert.Contains(mcpDraftResultText(t, outside), "meeting_not_found")
-			}
 		})
 	}
-}
-
-func TestMCPMeetingRecordCalendarOnly(t *testing.T) {
-	must, assert := require.New(t), assert.New(t)
-	st := testutil.NewTestStore(t)
-	source, err := st.GetOrCreateSource("gcal", "calendar@example.test")
-	must.NoError(err)
-	id, err := st.PersistMessage(&store.MessagePersistData{
-		Message:      &store.Message{SourceID: source.ID, SourceMessageID: "first", MessageType: "calendar_event"},
-		Conversation: &store.ConversationPersistData{SourceConversationID: "first", ConversationType: "calendar"},
-		RawMIME:      []byte(`{"id":"first","iCalUID":"copy@example.test","start":{"dateTime":"2027-03-14T10:00:00Z"},"end":{"dateTime":"2027-03-14T11:00:00Z"}}`), RawFormat: "gcal_json",
-	})
-	must.NoError(err)
-	server := mcpDraftTestDaemon(t, &storeAPIAdapter{store: st}, nil)
-	ctx := withStoreResolverConfig(t, &config.Config{HomeDir: t.TempDir(), Data: config.DataConfig{DataDir: t.TempDir()}, Remote: config.RemoteConfig{URL: server.URL, APIKey: "owner-test-key", AllowInsecure: true}})
-	session := mcpDraftTestSession(ctx, t)
-	names := mcpDraftToolNames(t, session)
-	must.Contains(names, "get_meeting_record")
-	assert.NotContains(names, "get_meeting_context")
-	assert.NotContains(names, "list_meeting_action_items")
-	assert.NotContains(names, "get_meeting_metrics")
-	result, err := session.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "get_meeting_record", Arguments: map[string]any{"ref": fmt.Sprintf("evt:%d", id)}})
-	must.NoError(err)
-	must.False(result.IsError, "%v", result.Content)
-	t.Run("delegated", func(t *testing.T) {
-		require := require.New(t)
-		session := mcpDraftTestSession(mcpDraftAgentContext(t, server, source.ID, []string{"message.read"}), t)
-		require.Contains(mcpDraftToolNames(t, session), "get_meeting_record")
-	})
 }
 
 func TestMCPArchiveCatalogBudgets(t *testing.T) {

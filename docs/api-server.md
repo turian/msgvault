@@ -2453,7 +2453,7 @@ for the user workflow and coverage meanings.
 
 `GET /api/v1/meetings/record?ref=...` returns the notes and calendar copies
 for a `msg:<id>` or `evt:<id>[@occurrence key]` reference. It requires API
-schema 5.4.0. A `message.read` grant returns matching notes; add `calendar.event.read` to include calendar copies or open an event reference.
+schema 5.4.0. A `message.read` grant returns notes from its authorized sources; add `calendar.event.read` to include calendar copies or open an event reference.
 
 `POST /api/v1/meetings/links/decisions` accepts owner requests with `left`,
 `right`, and `decision` (`link`, `unlink`, or `clear`). It returns the canonical refs and

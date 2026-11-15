@@ -1528,3 +1528,86 @@ func TestMeetingDecisionDedupBetweenDuplicates(t *testing.T) {
 	r.Contains(record.MessageIDs, second)
 	r.NotContains(record.MessageIDs, survivor)
 }
+
+func TestMeetingDecisionNotesOnlySavedChoices(t *testing.T) {
+	st := newRFC822IDBackfillBackendStore(t)
+	raw := `{"owner":{"email":"owner@example.com"},"calendar_event":{"calendar_event_id":"shared_20270314T100000Z"}}`
+	_, first := projectionFixture(t, st, "notes-only-first", "granola_json", raw)
+	_, second := projectionFixture(t, st, "notes-only-second", "granola_json", raw)
+	_, third := projectionFixture(t, st, "notes-only-third", "meeting_json", `{}`)
+	ref := func(id int64) MeetingLinkRef { return MeetingLinkRef{Kind: "msg", MessageID: id} }
+	_, err := st.DecideMeetingLinkContext(t.Context(), ref(first), ref(second), "unlink")
+	require.NoError(t, err)
+	_, err = st.DecideMeetingLinkContext(t.Context(), ref(first), ref(third), "link")
+	require.NoError(t, err)
+	record, err := st.MeetingNotesContext(t.Context(), ref(first))
+	require.NoError(t, err)
+	assert.Equal(t, []int64{first, third}, record.MessageIDs)
+	assert.Empty(t, record.Links)
+}
+
+func TestMeetingDecisionClearRescheduledDuplicate(t *testing.T) {
+	st := newRFC822IDBackfillBackendStore(t)
+	raw := `{"id":"single","start":{"dateTime":"2027-03-14T10:00:00Z"},"end":{"dateTime":"2027-03-14T11:00:00Z"}}`
+	data, survivor := calendarFixture(t, st, "reset-survivor", raw)
+	_, duplicate := calendarFixture(t, st, "reset-duplicate", raw, "duplicate@example.com")
+	_, note := projectionFixture(t, st, "reset-note", "meeting_json", `{}`)
+	noteRef := MeetingLinkRef{Kind: "msg", MessageID: note}
+	_, err := st.DecideMeetingLinkContext(t.Context(), MeetingLinkRef{Kind: "evt", MessageID: duplicate}, noteRef, "link")
+	require.NoError(t, err)
+	_, err = st.MergeDuplicates(t.Context(), survivor, []int64{duplicate}, "reset-rescheduled")
+	require.NoError(t, err)
+	data.RawMIME = []byte(`{"id":"single","start":{"dateTime":"2027-03-15T10:00:00Z"},"end":{"dateTime":"2027-03-15T11:00:00Z"}}`)
+	_, err = st.PersistMessage(data)
+	require.NoError(t, err)
+	survivorRef := MeetingLinkRef{Kind: "evt", MessageID: survivor}
+	_, err = st.DecideMeetingLinkContext(t.Context(), survivorRef, noteRef, "unlink")
+	require.NoError(t, err)
+	_, err = st.DecideMeetingLinkContext(t.Context(), survivorRef, noteRef, "clear")
+	require.NoError(t, err)
+	_, err = st.UndoDedup(t.Context(), "reset-rescheduled")
+	require.NoError(t, err)
+	record, err := st.MeetingRecordContext(t.Context(), noteRef)
+	require.NoError(t, err)
+	assert.Empty(t, record.Links)
+}
+
+func TestMeetingDecisionMissingSeriesOccurrenceDoesNotBlockUnlink(t *testing.T) {
+	st := newRFC822IDBackfillBackendStore(t)
+	data, series := calendarFixture(t, st, "shortened-series", `{"id":"series","start":{"dateTime":"2027-03-14T10:00:00Z"},"end":{"dateTime":"2027-03-14T11:00:00Z"},"recurrence":["RRULE:FREQ=WEEKLY;COUNT=2"]}`)
+	_, first := projectionFixture(t, st, "shortened-first", "meeting_json", `{}`)
+	_, second := projectionFixture(t, st, "shortened-second", "meeting_json", `{}`)
+	occurrence, err := ParseMeetingLinkRef(fmt.Sprintf("evt:%d@20270321T100000Z", series))
+	require.NoError(t, err)
+	ref := func(id int64) MeetingLinkRef { return MeetingLinkRef{Kind: "msg", MessageID: id} }
+	_, err = st.DecideMeetingLinkContext(t.Context(), ref(first), occurrence, "link")
+	require.NoError(t, err)
+	_, err = st.DecideMeetingLinkContext(t.Context(), ref(second), occurrence, "link")
+	require.NoError(t, err)
+	data.RawMIME = []byte(`{"id":"series","start":{"dateTime":"2027-03-14T10:00:00Z"},"end":{"dateTime":"2027-03-14T11:00:00Z"},"recurrence":["RRULE:FREQ=WEEKLY;COUNT=1"]}`)
+	_, err = st.PersistMessage(data)
+	require.NoError(t, err)
+	_, err = st.DecideMeetingLinkContext(t.Context(), ref(first), ref(second), "unlink")
+	require.NoError(t, err)
+}
+
+func TestMeetingDecisionSuccessiveMergePriority(t *testing.T) {
+	st := newRFC822IDBackfillBackendStore(t)
+	var ids []int64
+	for _, name := range []string{"priority-first", "priority-kept", "priority-old", "priority-new", "priority-final"} {
+		_, id := projectionFixture(t, st, name, "meeting_json", `{}`)
+		ids = append(ids, id)
+	}
+	ref := func(id int64) MeetingLinkRef { return MeetingLinkRef{Kind: "msg", MessageID: id} }
+	_, err := st.DecideMeetingLinkContext(t.Context(), ref(ids[0]), ref(ids[2]), "link")
+	require.NoError(t, err)
+	_, err = st.DecideMeetingLinkContext(t.Context(), ref(ids[1]), ref(ids[3]), "unlink")
+	require.NoError(t, err)
+	_, err = st.MergeDuplicates(t.Context(), ids[1], []int64{ids[0]}, "priority-first")
+	require.NoError(t, err)
+	_, err = st.MergeDuplicates(t.Context(), ids[4], []int64{ids[2], ids[3]}, "priority-second")
+	require.NoError(t, err)
+	record, err := st.MeetingRecordContext(t.Context(), ref(ids[1]))
+	require.NoError(t, err)
+	assert.NotContains(t, record.MessageIDs, ids[4])
+}

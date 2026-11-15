@@ -68,7 +68,7 @@ func (s *Store) meetingDecisionEdges(ctx context.Context, endpoint meetingDecisi
 
 // MeetingRecordContext follows automatic evidence and owner choices in one snapshot.
 func (s *Store) MeetingRecordContext(ctx context.Context, ref MeetingLinkRef) (MeetingRecord, error) {
-	return s.meetingRecordContext(ctx, ref)
+	return s.meetingRecordContext(ctx, ref, false)
 }
 
 type meetingDecisionNode struct {
@@ -89,7 +89,7 @@ type meetingDecisionGraph struct {
 	automatic  MeetingRecord
 }
 
-func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef) (MeetingRecord, error) {
+func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef, notesOnly bool) (MeetingRecord, error) {
 	result := MeetingRecord{Links: []MeetingLink{}, MessageIDs: []int64{}, Unexpandable: []CalendarUnexpandable{}}
 	ctx, release, err := s.BeginReadSnapshotContext(ctx)
 	if err != nil {
@@ -104,7 +104,7 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef) (M
 	if err != nil {
 		return result, err
 	}
-	graph, err := s.loadMeetingDecisionGraph(ctx, []meetingDecisionEndpoint{seed}, &budget)
+	graph, err := s.loadMeetingDecisionGraph(ctx, []meetingDecisionEndpoint{seed}, &budget, notesOnly)
 	if err != nil {
 		return result, err
 	}
@@ -114,7 +114,7 @@ func (s *Store) meetingRecordContext(ctx context.Context, ref MeetingLinkRef) (M
 	return graph.record(seed), nil
 }
 
-func (s *Store) loadMeetingDecisionGraph(ctx context.Context, seeds []meetingDecisionEndpoint, budget *int) (*meetingDecisionGraph, error) {
+func (s *Store) loadMeetingDecisionGraph(ctx context.Context, seeds []meetingDecisionEndpoint, budget *int, notesOnly bool) (*meetingDecisionGraph, error) {
 	nodes := map[string]meetingDecisionNode{}
 	var queue []meetingDecisionEndpoint
 	add := func(endpoint meetingDecisionEndpoint, link *MeetingLink) {
@@ -142,8 +142,11 @@ func (s *Store) loadMeetingDecisionGraph(ctx context.Context, seeds []meetingDec
 		endpoint := queue[0]
 		queue = queue[1:]
 		if !resolved[endpoint.ref()] {
-			record, err := s.meetingAutomaticRecordForEndpoint(ctx, endpoint, budget)
+			record, err := s.meetingAutomaticRecordForEndpoint(ctx, endpoint, budget, notesOnly)
 			if errors.Is(err, sql.ErrNoRows) && endpoint != seeds[0] {
+				// A choice on a missing occurrence stays saved but joins nothing.
+				delete(nodes, endpoint.ref())
+				candidates = slices.DeleteFunc(candidates, func(c meetingDecisionEdge) bool { return c.a.ref() == endpoint.ref() || c.b.ref() == endpoint.ref() })
 				continue
 			}
 			if err != nil {
@@ -195,21 +198,14 @@ func (s *Store) loadMeetingDecisionGraph(ctx context.Context, seeds []meetingDec
 				continue
 			}
 			seenDecisions[choice.id] = true
-			valid := true
-			for _, endpoint := range []*meetingDecisionEndpoint{&choice.a, &choice.b} {
-				canonical, err := s.meetingOccurrenceKey(ctx, *endpoint, budget)
-				if errors.Is(err, ErrMeetingOccurrenceRequired) || errors.Is(err, sql.ErrNoRows) {
-					valid = false
-					break
-				}
-				if err != nil {
-					return nil, err
-				}
-				*endpoint = canonical
+			a, b, ok, err := s.meetingPairKeys(ctx, choice.a, choice.b, budget)
+			if err != nil {
+				return nil, err
 			}
-			if !valid {
+			if !ok {
 				continue
 			}
+			choice.a, choice.b = a, b
 			add(choice.a, nil)
 			add(choice.b, nil)
 			candidates = append(candidates, choice)

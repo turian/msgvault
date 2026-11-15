@@ -1297,6 +1297,7 @@ func (s *Store) buildLargeIndexesConcurrently(ctx context.Context) {
 		{"idx_message_recipients_email_from", "ON message_recipients(LOWER(email_address), message_id) WHERE recipient_type = 'from'"},
 		{"idx_message_recipients_normalized_email", messageRecipientsNormalizedEmailIndexDefinition},
 		{"idx_calendar_events_ical_uid", "ON calendar_events(ical_uid)"},
+		{"idx_calendar_events_series_provider_id", "ON calendar_events(series_provider_id)"},
 		{"idx_meeting_details_link_key", "ON meeting_details(link_key) WHERE link_key IS NOT NULL"},
 	}
 	for _, index := range concurrentIndexes {
@@ -2211,6 +2212,9 @@ func (s *Store) initSchemaContext(ctx context.Context) error {
 	if !s.IsPostgreSQL() {
 		if err := s.runMaintenance(ctx, func(ctx context.Context, tx *loggedTx) error {
 			if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_calendar_events_ical_uid ON calendar_events(ical_uid)`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_calendar_events_series_provider_id ON calendar_events(series_provider_id)`); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id, id)`); err != nil {
