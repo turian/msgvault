@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
@@ -48,17 +49,17 @@ func (s *Store) meetingEventRows(ctx context.Context, predicate string, args []a
 		return nil, err
 	}
 	*budget -= len(rows)
-	owners := make(map[int64]*Source)
+	owners := make(map[int64]sql.NullString)
 	for i := range rows {
-		source, ok := owners[rows[i].SourceID]
+		config, ok := owners[rows[i].SourceID]
 		if !ok {
-			source, err = s.GetSourceByIDContext(ctx, rows[i].SourceID)
+			err = s.meetingSQLReader(ctx).QueryRowContext(ctx, "SELECT sync_config FROM sources WHERE id = ?", rows[i].SourceID).Scan(&config)
 			if err != nil {
 				return nil, err
 			}
-			owners[rows[i].SourceID] = source
+			owners[rows[i].SourceID] = config
 		}
-		rows[i].CalendarID = calendarMailbox(source.SyncConfig)
+		rows[i].CalendarID = calendarMailbox(config)
 	}
 	return rows, nil
 }

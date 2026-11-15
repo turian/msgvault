@@ -231,11 +231,19 @@ func (s *Store) DecideMeetingLinkContext(ctx context.Context, left, right Meetin
 		bareB := b.Kind == meetingRefEvent && b.Key == ""
 		ca, err := s.meetingOccurrenceKey(ctx, a, &budget)
 		if err != nil {
-			return s.clearStoredMeetingDecision(ctx, tx, a, b, bareA, bareB, decision, err, &result)
+			if err := s.clearStoredMeetingDecision(ctx, tx, a, b, bareA, bareB, decision, err, &result); err != nil {
+				return err
+			}
+			_, err = s.bumpIdentityRevisionContext(ctx, tx)
+			return err
 		}
 		cb, err := s.meetingOccurrenceKey(ctx, b, &budget)
 		if err != nil {
-			return s.clearStoredMeetingDecision(ctx, tx, a, b, bareA, bareB, decision, err, &result)
+			if err := s.clearStoredMeetingDecision(ctx, tx, a, b, bareA, bareB, decision, err, &result); err != nil {
+				return err
+			}
+			_, err = s.bumpIdentityRevisionContext(ctx, tx)
+			return err
 		}
 		for _, endpoint := range []meetingDecisionEndpoint{a, b} {
 			if err := s.validateMeetingInput(ctx, endpoint, &budget); err != nil {
@@ -308,7 +316,8 @@ func (s *Store) DecideMeetingLinkContext(ctx context.Context, left, right Meetin
 				return err
 			}
 			result = MeetingLinkDecisionResult{Left: ca.ref(), Right: cb.ref(), State: "automatic"}
-			return nil
+			_, err = s.bumpIdentityRevisionContext(ctx, tx)
+			return err
 		}
 		for _, edge := range equivalent {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM meeting_link_decisions WHERE id=?`, edge.id); err != nil {
@@ -359,7 +368,8 @@ func (s *Store) DecideMeetingLinkContext(ctx context.Context, left, right Meetin
 			}
 		}
 		result = MeetingLinkDecisionResult{Left: ca.ref(), Right: cb.ref(), State: state}
-		return nil
+		_, err = s.bumpIdentityRevisionContext(ctx, tx)
+		return err
 	})
 	return result, err
 }
