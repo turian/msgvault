@@ -1266,6 +1266,9 @@ func (s *Store) MigrateSourceMessageID(ctx context.Context, sourceID, conversati
 				}
 			}
 
+			if err := s.preservePurgedMeetingDecisions(ctx, tx, `source_id = ? AND conversation_id = ? AND source_message_id = ?`, sourceID, conversationID, legacySourceMessageID); err != nil {
+				return fmt.Errorf("preserve meeting decisions: %w", err)
+			}
 			_, err = tx.ExecContext(
 				ctx,
 				`DELETE FROM messages
