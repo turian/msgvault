@@ -5,6 +5,7 @@ permissions:
   contents: read
 jobs:
   gmail-history-regression:
+    if: false # Already dispatched separately for the product commit.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -71,3 +72,33 @@ jobs:
           path: ${{ runner.temp }}/baseline.json
           retention-days: 3
           if-no-files-found: ignore
+  archive-replay-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -trimpath
+      GOPROXY: https://proxy.golang.org|direct
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build disposable archive replay binaries
+        run: |
+          mkdir -p "$RUNNER_TEMP/replay"
+          go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/head" ./internal/sync
+          cp internal/sync/archive_history_probe_test.go "$RUNNER_TEMP/probe.go"
+          git checkout --detach 46c44381
+          cp "$RUNNER_TEMP/probe.go" internal/sync/archive_history_probe_test.go
+          go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/base" ./internal/sync
+          cd "$RUNNER_TEMP/replay"
+          shasum -a 256 base head > SHA256SUMS
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: archive-history-replay
+          path: ${{ runner.temp }}/replay
+          retention-days: 1
