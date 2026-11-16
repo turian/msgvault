@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 03328709584f94c31cd61359c19d18cfa0e641e7
+          ref: 5bc594d7a3f9c5e8f5afc88ad980d5aeb23c6c1d
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -45,8 +45,8 @@ jobs:
         run: go test -tags "fts5 sqlite_vec" ./internal/sync -count=1
       - name: Prove pending changes are skipped on the unchanged base
         run: |
-          git diff 46c44381 03328709 -- internal/sync/gmail_full_resume_test.go > "$RUNNER_TEMP/regression.patch"
-          git checkout --detach 46c44381
+          git diff 6761a6a6 5bc594d7 -- internal/sync/gmail_full_resume_test.go > "$RUNNER_TEMP/regression.patch"
+          git checkout --detach 6761a6a6
           git apply "$RUNNER_TEMP/regression.patch"
           set +e
           go test -json -tags "fts5 sqlite_vec" ./internal/sync -run '^(TestGmailFullBackfillPreservesPendingHistory|TestGmailFullResumeHistoryContinuity)$' -count=1 > "$RUNNER_TEMP/baseline.json"
@@ -64,6 +64,22 @@ jobs:
           assert 'TRASH' in output and 'INBOX' in output, output
           print('PASS: baseline skips pending label changes and deletion after publishing an unconsumed cursor')
           PYVERIFY
+      - name: Check whether updated PR2227 supersedes the IMAP correction
+        run: |
+          git checkout --detach 8b1b4aef71796705842df5bce0ad29c74ec54dd7
+          git restore internal/sync/gmail_full_resume_test.go
+          python3 - <<'PYIMAP'
+          import subprocess
+          from pathlib import Path
+          text=subprocess.check_output(['git','show','c97dc1c23c84da17ee1ca1d69ab9031d6c17ca96:cmd/msgvault/cmd/imap_folder_state_sync_test.go'],text=True)
+          start=text.index('func TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark')
+          end=text.index('\nfunc ',start+5)
+          test=text[start:end].replace('assert.Equal(t, role.want, savedRole, "All Mail evidence must not replace the Sent/Drafts role")','assert.Equal(t, "all", savedRole, "current base preserves All Mail as the stored role")')
+          imports='package cmd\nimport ("net"; "strconv"; "testing"; imapapi "github.com/emersion/go-imap/v2"; "github.com/stretchr/testify/assert"; "github.com/stretchr/testify/require"; "go.kenn.io/msgvault/internal/config"; imaplib "go.kenn.io/msgvault/internal/imap"; "go.kenn.io/msgvault/internal/testutil")\n'
+          Path('cmd/msgvault/cmd/imap_all_mail_current_base_test.go').write_text(imports+test)
+          PYIMAP
+          go test -tags "fts5 sqlite_vec" ./cmd/msgvault/cmd -run '^TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark$' -count=1
+          MSGVAULT_TEST_DB='postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable' go test -tags "fts5 sqlite_vec" ./cmd/msgvault/cmd -run '^TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark$' -count=1
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -71,3 +87,35 @@ jobs:
           path: ${{ runner.temp }}/baseline.json
           retention-days: 3
           if-no-files-found: ignore
+  archive-replay-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -trimpath
+      GOARCH: arm64
+      GOPROXY: https://proxy.golang.org|direct
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build disposable archive replay binaries
+        run: |
+          git diff --exit-code 5bc594d7 -- internal/sync/sync.go internal/sync/incremental.go internal/sync/gmail_full_resume_test.go
+          mkdir -p "$RUNNER_TEMP/replay"
+          go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/head" ./internal/sync
+          cp internal/sync/archive_history_probe_test.go "$RUNNER_TEMP/probe.go"
+          git checkout --detach 6761a6a6
+          cp "$RUNNER_TEMP/probe.go" internal/sync/archive_history_probe_test.go
+          go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/base" ./internal/sync
+          cd "$RUNNER_TEMP/replay"
+          shasum -a 256 base head > SHA256SUMS
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: archive-history-replay
+          path: ${{ runner.temp }}/replay
+          retention-days: 1
