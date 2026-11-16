@@ -5,7 +5,6 @@ permissions:
   contents: read
 jobs:
   gmail-history-regression:
-    if: false # Already dispatched separately for the product commit.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -26,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3178f234888458ab6b40a7a3371bed5aaa7f7b76
+          ref: 66344e0f88df84d75da587b09a06d5b37329a916
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -46,11 +45,11 @@ jobs:
         run: go test -tags "fts5 sqlite_vec" ./internal/sync -count=1
       - name: Prove pending changes are skipped on the unchanged base
         run: |
-          git diff 46c44381 3178f234 -- internal/sync/gmail_full_resume_test.go > "$RUNNER_TEMP/regression.patch"
+          git diff 46c44381 66344e0f -- internal/sync/gmail_full_resume_test.go > "$RUNNER_TEMP/regression.patch"
           git checkout --detach 46c44381
           git apply "$RUNNER_TEMP/regression.patch"
           set +e
-          go test -json -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmailFullBackfillPreservesPendingHistory$' -count=1 > "$RUNNER_TEMP/baseline.json"
+          go test -json -tags "fts5 sqlite_vec" ./internal/sync -run '^(TestGmailFullBackfillPreservesPendingHistory|TestGmailFullResumeHistoryContinuity)$' -count=1 > "$RUNNER_TEMP/baseline.json"
           result=$?
           set -e
           test "$result" -eq 1
@@ -60,7 +59,7 @@ jobs:
           events=[json.loads(line) for line in Path(os.environ['RUNNER_TEMP'], 'baseline.json').read_text().splitlines()]
           failures=[e['Test'] for e in events if e.get('Action')=='fail' and e.get('Test')]
           output=''.join(e.get('Output','') for e in events)
-          assert failures==['TestGmailFullBackfillPreservesPendingHistory'], failures
+          assert set(failures)=={'TestGmailFullBackfillPreservesPendingHistory', 'TestGmailFullResumeHistoryContinuity', 'TestGmailFullResumeHistoryContinuity/once', 'TestGmailFullResumeHistoryContinuity/twice'}, failures
           assert 'backfill must not advance past unconsumed changes' in output, output
           assert 'TRASH' in output and 'INBOX' in output, output
           print('PASS: baseline skips pending label changes and deletion after publishing an unconsumed cursor')
@@ -77,6 +76,7 @@ jobs:
     timeout-minutes: 30
     env:
       GOFLAGS: -trimpath
+      GOARCH: arm64
       GOPROXY: https://proxy.golang.org|direct
     steps:
       - uses: actions/checkout@v7.0.1
@@ -89,6 +89,7 @@ jobs:
           cache: true
       - name: Build disposable archive replay binaries
         run: |
+          git diff --exit-code 66344e0f -- internal/sync/sync.go internal/sync/incremental.go internal/sync/gmail_full_resume_test.go
           mkdir -p "$RUNNER_TEMP/replay"
           go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/head" ./internal/sync
           cp internal/sync/archive_history_probe_test.go "$RUNNER_TEMP/probe.go"
