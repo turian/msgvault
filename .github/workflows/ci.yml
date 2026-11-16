@@ -4,6 +4,73 @@ on:
 permissions:
   contents: read
 jobs:
+  gmail-history-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: msgvault_test
+          POSTGRES_PASSWORD: msgvault_test
+          POSTGRES_DB: msgvault_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U msgvault_test -d msgvault_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      GOFLAGS: -trimpath
+      GOPROXY: https://proxy.golang.org|direct
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 385c43598d8f0c66a165539a9f2d9e5467e483e3
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting and static analysis
+        run: |
+          go fmt ./...
+          git diff --exit-code
+          go vet ./...
+      - name: Exercise sync package on SQLite
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync -count=1
+      - name: Exercise sync package on PostgreSQL
+        env:
+          MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync -count=1
+      - name: Prove pending changes are skipped on the unchanged base
+        run: |
+          git diff 39657e68 385c4359 -- internal/sync/gmail_full_resume_test.go > "$RUNNER_TEMP/regression.patch"
+          git checkout --detach 39657e68
+          git apply "$RUNNER_TEMP/regression.patch"
+          set +e
+          go test -json -tags "fts5 sqlite_vec" ./internal/sync -run '^(TestGmailFullBackfillPreservesPendingHistory|TestGmailFullResumeHistoryContinuity)$' -count=1 > "$RUNNER_TEMP/baseline.json"
+          result=$?
+          set -e
+          test "$result" -eq 1
+          python3 - <<'PYVERIFY'
+          import json, os
+          from pathlib import Path
+          events=[json.loads(line) for line in Path(os.environ['RUNNER_TEMP'], 'baseline.json').read_text().splitlines()]
+          failures=[e['Test'] for e in events if e.get('Action')=='fail' and e.get('Test')]
+          output=''.join(e.get('Output','') for e in events)
+          assert set(failures)=={'TestGmailFullBackfillPreservesPendingHistory', 'TestGmailFullResumeHistoryContinuity', 'TestGmailFullResumeHistoryContinuity/once', 'TestGmailFullResumeHistoryContinuity/twice'}, failures
+          assert 'backfill must not advance past unconsumed changes' in output, output
+          assert 'TRASH' in output and 'INBOX' in output, output
+          print('PASS: baseline skips pending label changes and deletion after publishing an unconsumed cursor')
+          PYVERIFY
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: gmail-history-baseline
+          path: ${{ runner.temp }}/baseline.json
+          retention-days: 3
+          if-no-files-found: ignore
   archive-replay-build:
     runs-on: macos-26
     timeout-minutes: 30
@@ -23,17 +90,13 @@ jobs:
           cache: true
       - name: Build disposable archive replay binaries
         run: |
-          git diff --exit-code 5bc594d7 -- internal/sync/sync.go internal/sync/incremental.go internal/sync/gmail_full_resume_test.go
+          git diff --exit-code 385c4359 -- internal/sync/sync.go internal/sync/incremental.go internal/sync/gmail_full_resume_test.go
           mkdir -p "$RUNNER_TEMP/replay"
           go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/head" ./internal/sync
-          cp internal/sync/archive_history_probe_test.go "$RUNNER_TEMP/probe.go"
-          git checkout --detach 6761a6a6
-          cp "$RUNNER_TEMP/probe.go" internal/sync/archive_history_probe_test.go
-          go test -c -tags "fts5 sqlite_vec" -ldflags="-s -w" -o "$RUNNER_TEMP/replay/base" ./internal/sync
           cd "$RUNNER_TEMP/replay"
-          shasum -a 256 base head > SHA256SUMS
+          shasum -a 256 head > SHA256SUMS
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: archive-history-replay
+          name: archive-history-integrated
           path: ${{ runner.temp }}/replay
           retention-days: 1
