@@ -4,56 +4,13 @@ on:
 permissions:
   contents: read
 jobs:
-  updated-imap-base:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: msgvault_test
-          POSTGRES_PASSWORD: msgvault_test
-          POSTGRES_DB: msgvault_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U msgvault_test -d msgvault_test"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      GOFLAGS: -trimpath
-      GOPROXY: https://proxy.golang.org|direct
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          repository: kenn-io/msgvault
-          ref: 8b1b4aef71796705842df5bce0ad29c74ec54dd7
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Check whether updated PR2227 supersedes the IMAP correction
-        run: |
-          git fetch https://github.com/turian/msgvault.git c97dc1c23c84da17ee1ca1d69ab9031d6c17ca96
-          python3 - <<'PYIMAP'
-          import subprocess
-          from pathlib import Path
-          text=subprocess.check_output(['git','show','c97dc1c23c84da17ee1ca1d69ab9031d6c17ca96:cmd/msgvault/cmd/imap_folder_state_sync_test.go'],text=True)
-          start=text.index('func TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark')
-          end=text.index('\nfunc ',start+5)
-          test=text[start:end].replace('assert.Equal(t, role.want, savedRole, "All Mail evidence must not replace the Sent/Drafts role")','assert.Equal(t, "all", savedRole, "current base preserves All Mail as the stored role")')
-          imports='package cmd\nimport ("net"; "strconv"; "testing"; imapapi "github.com/emersion/go-imap/v2"; "github.com/stretchr/testify/assert"; "github.com/stretchr/testify/require"; "go.kenn.io/msgvault/internal/config"; imaplib "go.kenn.io/msgvault/internal/imap"; "go.kenn.io/msgvault/internal/testutil")\n'
-          Path('cmd/msgvault/cmd/imap_all_mail_current_base_test.go').write_text(imports+test)
-          PYIMAP
-          go test -v -tags "fts5 sqlite_vec" ./cmd/msgvault/cmd -run '^TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark$' -count=1
-          MSGVAULT_TEST_DB='postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable' go test -v -tags "fts5 sqlite_vec" ./cmd/msgvault/cmd -run '^TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark$' -count=1
   archive-replay-build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     env:
       GOFLAGS: -trimpath
       GOARCH: arm64
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
       GOPROXY: https://proxy.golang.org|direct
     steps:
       - uses: actions/checkout@v7.0.1
