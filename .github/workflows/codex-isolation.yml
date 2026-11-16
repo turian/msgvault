@@ -1,4 +1,4 @@
-name: Gmail archived label reproduction
+name: Gmail archived label refresh checks
 on:
   workflow_dispatch:
 permissions:
@@ -25,22 +25,60 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3217f601597b46c489e1d79b9216faf2f4436545
+          ref: 920ee905d8f9acb3704f0bc1a42d414c7cc7aa2b
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Check formatting and sync analysis
+      - name: Regenerate API assets and contract marker
         run: |
+          set -euo pipefail
+          make api-generate
+          marker_helper=internal/api/label_refresh_generation_test.go
+          test ! -e "$marker_helper"
+          trap 'rm -f "$marker_helper"' EXIT
+          cat > "$marker_helper" <<'GO'
+          package api
+          import (
+            "crypto/sha256"
+            "fmt"
+            "os"
+            "path/filepath"
+            "testing"
+            "github.com/stretchr/testify/require"
+          )
+          func TestGenerateLabelRefreshContractMarker(t *testing.T) {
+            const summary = "Add explicit archived Gmail label refresh to CLI full sync."
+            digest := apiContractDigest(t, OpenAPIDocument(), openAPIClientDocument())
+            name := fmt.Sprintf("%s_%s_%x", APISchemaVersion, digest, sha256.Sum256([]byte(summary)))
+            require.NoError(t, os.WriteFile(filepath.Join(apiContractsDir, name), []byte(summary+"\n"), 0644))
+          }
+          GO
+          gofmt -w "$marker_helper"
+          go test -tags "fts5 sqlite_vec" ./internal/api -run '^TestGenerateLabelRefreshContractMarker$' -count=1
+          rm "$marker_helper"
+          trap - EXIT
+          git add -N internal/api/testdata/api-version-contracts
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, subprocess
+          paths = ['api/openapi.yaml', 'pkg/client/openapi.yaml', 'pkg/client/generated', 'internal/api/testdata/api-version-contracts']
+          patch = subprocess.check_output(['git', 'diff', '--binary', '--'] + paths)
+          print(json.dumps({'msgvault_generated_patch': base64.b64encode(gzip.compress(patch)).decode(), 'sha256': hashlib.sha256(patch).hexdigest()}))
+          PY
+      - name: Check formatting and static analysis
+        run: |
+          set -euo pipefail
           go fmt ./...
-          git diff --exit-code
-          go vet -tags "fts5 sqlite_vec" ./internal/sync ./cmd/msgvault/cmd
-      - name: Reproduce historical label drift on SQLite
-        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay)$' -count=1 -v
-      - name: Reproduce historical label drift on PostgreSQL
+          git diff --check
+          git diff --exit-code -- . ':!api/openapi.yaml' ':!pkg/client' ':!internal/api/testdata/api-version-contracts'
+          go vet -tags "fts5 sqlite_vec" ./...
+      - name: Check Gmail refresh, recovery, daemon, CLI and cache journeys
+        env:
+          MSGVAULT_API_CONTRACT_BASE: 8eeb34d9d4adc89cecf8aa78325e5223f4966ff5
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
+      - name: Check Gmail label refresh on PostgreSQL
         env:
           MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
-        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay)$' -count=1 -v
-      - name: Verify label removals through cached message filtering
-        run: go test -tags "fts5 sqlite_vec" ./cmd/msgvault/cmd -run '^TestCacheNeedsBuildTracksCoveredRelatedRows$' -count=1 -v
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(FullLabelRefresh.*|ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay|RecoveryReplacesArchivedLabels|OrdinaryFullKeepsExistingRawShortcut)$' -count=1 -v
