@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3178f234
+          ref: 3178f234888458ab6b40a7a3371bed5aaa7f7b76
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
