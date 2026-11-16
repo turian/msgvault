@@ -48,7 +48,8 @@ import (
 // so committed caches never mix shards of different shapes.
 // Version 36 rebuilds sender projections for relayed authors.
 // Version 37 stores resolved meeting groups for analytical counts.
-const CacheSchemaVersion = 37
+// Version 38 stores each person's owning transcript for filtered meeting counts.
+const CacheSchemaVersion = 38
 
 // CacheSyncState is the commit marker written after a complete analytics
 // cache publication. SQLite remains authoritative; these watermarks only
