@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 403b6c7bd366ea9408619fe773a7fc64cb86cd7c
+          ref: 0997d496ae82e64533d2a10c94a396f2b42a8062
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with:
@@ -37,8 +37,8 @@ jobs:
           git diff --exit-code
           go vet -tags "fts5 sqlite_vec" ./internal/sync
       - name: Reproduce historical label drift on SQLite
-        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmailArchivedLabelDriftNeedsCompleteRefresh$' -count=1 -v
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay)$' -count=1 -v
       - name: Reproduce historical label drift on PostgreSQL
         env:
           MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
-        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmailArchivedLabelDriftNeedsCompleteRefresh$' -count=1 -v
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay)$' -count=1 -v
