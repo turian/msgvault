@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 920ee905d8f9acb3704f0bc1a42d414c7cc7aa2b
+          ref: 6ac863ada384b21d5910736f61077176f74d7c70
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -67,6 +67,7 @@ jobs:
           patch = subprocess.check_output(['git', 'diff', '--binary', '--'] + paths)
           print(json.dumps({'msgvault_generated_patch': base64.b64encode(gzip.compress(patch)).decode(), 'sha256': hashlib.sha256(patch).hexdigest()}))
           PY
+          git diff --exit-code -- api/openapi.yaml pkg/client/openapi.yaml pkg/client/generated internal/api/testdata/api-version-contracts
       - name: Check formatting and static analysis
         run: |
           set -euo pipefail
