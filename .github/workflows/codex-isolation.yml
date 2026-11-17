@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: d29608983f1902d6a5f1b6743a38c8aa5824b4e6
+          ref: 332cddf207e645989436a8e73551c0db170a572b
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -77,7 +77,7 @@ jobs:
           go vet -tags "fts5 sqlite_vec" ./...
       - name: Check Gmail refresh, recovery, daemon, CLI and cache journeys
         env:
-          MSGVAULT_API_CONTRACT_BASE: 8eeb34d9d4adc89cecf8aa78325e5223f4966ff5
+          MSGVAULT_API_CONTRACT_BASE: d224c9d888afd40dde60f42a10045ef09916cef6
         run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
       - name: Check Gmail label refresh on PostgreSQL
         env:
