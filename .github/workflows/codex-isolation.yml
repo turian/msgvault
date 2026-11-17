@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ca62ae188adddf20624883d532d2a2dcd6e7417f
+          ref: a5efee332628d6c2edbf43429ca7a446c2d0c180
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -95,11 +95,22 @@ jobs:
         env:
           MSGVAULT_API_CONTRACT_BASE: 9d0b00b3798ed05483d42363064da8322c5da8f3
         run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
+      - name: Check repository lint
+        if: ${{ !inputs.generate_assets_only }}
+        run: make lint-ci
+      - name: Check label Store behavior on SQLite
+        if: ${{ !inputs.generate_assets_only }}
+        run: go test -tags "fts5 sqlite_vec" ./internal/store -run '^(TestStore_EnsureLabelsBatch.*|TestStore_ReconcileMessageLabelsReportsChanges|TestReconcileMessageLabelsTxContext_CancelledContextStopsItsStatements)$' -count=1 -v
       - name: Check Gmail label refresh on PostgreSQL
         if: ${{ !inputs.generate_assets_only }}
         env:
           MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
         run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(FullLabelRefresh.*|ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay|RecoveryReplacesArchivedLabels|OrdinaryFullKeepsExistingRawShortcut)$' -count=1 -v
+      - name: Check label Store behavior on PostgreSQL
+        if: ${{ !inputs.generate_assets_only }}
+        env:
+          MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
+        run: go test -tags "fts5 sqlite_vec" ./internal/store -run '^(TestStore_EnsureLabelsBatch.*|TestStore_ReconcileMessageLabelsReportsChanges|TestReconcileMessageLabelsTxContext_CancelledContextStopsItsStatements)$' -count=1 -v
   archive-probe:
     if: ${{ inputs.build_archive_probe }}
     runs-on: macos-26
