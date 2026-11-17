@@ -1,10 +1,16 @@
 name: Gmail archived label refresh checks
 on:
   workflow_dispatch:
+    inputs:
+      build_archive_probe:
+        description: Build the offline native archive label probe only
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   label-drift:
+    if: ${{ !inputs.build_archive_probe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
@@ -83,3 +89,54 @@ jobs:
         env:
           MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
         run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(FullLabelRefresh.*|ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay|RecoveryReplacesArchivedLabels|OrdinaryFullKeepsExistingRawShortcut)$' -count=1 -v
+  archive-probe:
+    if: ${{ inputs.build_archive_probe }}
+    runs-on: macos-26
+    timeout-minutes: 25
+    env:
+      GOFLAGS: -trimpath
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 332cddf207e645989436a8e73551c0db170a572b
+          path: feature
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: feature/go.mod
+          cache: true
+          cache-dependency-path: feature/go.sum
+      - name: Compile the offline test driver from public source
+        working-directory: feature
+        run: |
+          set -euo pipefail
+          test "$(go env GOARCH)" = arm64
+          mkdir internal/labelprobe
+          cp ../scripts/label-refresh-probe/probe_test.go internal/labelprobe/probe_test.go
+          go vet -tags "fts5 sqlite_vec" ./internal/labelprobe
+          go test -c -tags "fts5 sqlite_vec" -o ../archive-label-probe.test ./internal/labelprobe
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('..')
+          artifact = root / 'archive-label-probe.test'
+          receipt = {
+              'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'driver_commit': os.environ['GITHUB_SHA'],
+              'driver_sha256': hashlib.sha256((root / 'scripts/label-refresh-probe/probe_test.go').read_bytes()).hexdigest(),
+              'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+              'private_data_in_build': False,
+          }
+          (root / 'archive-label-probe-build.json').write_text(json.dumps(receipt, indent=2))
+          PY
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: archive-label-probe-darwin-arm64
+          path: |
+            archive-label-probe.test
+            archive-label-probe-build.json
+          retention-days: 1
+          if-no-files-found: error
