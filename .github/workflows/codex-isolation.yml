@@ -6,6 +6,10 @@ on:
         description: Build the offline native archive label probe only
         type: boolean
         default: false
+      generate_assets_only:
+        description: Produce canonical API assets without claiming test verification
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -31,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 332cddf207e645989436a8e73551c0db170a572b
+          ref: ca62ae188adddf20624883d532d2a2dcd6e7417f
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -39,6 +43,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Regenerate API assets and contract marker
+        env:
+          GENERATE_ASSETS_ONLY: ${{ inputs.generate_assets_only }}
         run: |
           set -euo pipefail
           make api-generate
@@ -73,8 +79,11 @@ jobs:
           patch = subprocess.check_output(['git', 'diff', '--binary', '--'] + paths)
           print(json.dumps({'msgvault_generated_patch': base64.b64encode(gzip.compress(patch)).decode(), 'sha256': hashlib.sha256(patch).hexdigest()}))
           PY
-          git diff --exit-code -- api/openapi.yaml pkg/client/openapi.yaml pkg/client/generated internal/api/testdata/api-version-contracts
+          if [ "$GENERATE_ASSETS_ONLY" != "true" ]; then
+            git diff --exit-code -- api/openapi.yaml pkg/client/openapi.yaml pkg/client/generated internal/api/testdata/api-version-contracts
+          fi
       - name: Check formatting and static analysis
+        if: ${{ !inputs.generate_assets_only }}
         run: |
           set -euo pipefail
           go fmt ./...
@@ -82,10 +91,12 @@ jobs:
           git diff --exit-code -- . ':!api/openapi.yaml' ':!pkg/client' ':!internal/api/testdata/api-version-contracts'
           go vet -tags "fts5 sqlite_vec" ./...
       - name: Check Gmail refresh, recovery, daemon, CLI and cache journeys
+        if: ${{ !inputs.generate_assets_only }}
         env:
-          MSGVAULT_API_CONTRACT_BASE: d224c9d888afd40dde60f42a10045ef09916cef6
+          MSGVAULT_API_CONTRACT_BASE: 9d0b00b3798ed05483d42363064da8322c5da8f3
         run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
       - name: Check Gmail label refresh on PostgreSQL
+        if: ${{ !inputs.generate_assets_only }}
         env:
           MSGVAULT_TEST_DB: postgres://msgvault_test:msgvault_test@localhost:5432/msgvault_test?sslmode=disable
         run: go test -tags "fts5 sqlite_vec" ./internal/sync -run '^TestGmail(FullLabelRefresh.*|ArchivedLabelDriftNeedsCompleteRefresh|LabelSnapshotConvergesAfterOlderHistoryReplay|RecoveryReplacesArchivedLabels|OrdinaryFullKeepsExistingRawShortcut)$' -count=1 -v
