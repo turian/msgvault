@@ -148,6 +148,30 @@ jobs:
         env:
           MSGVAULT_API_CONTRACT_BASE: ${{ inputs.contract_base }}
         run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
+      - name: Check the built CLI and browser contracts
+        if: ${{ !inputs.generate_assets_only }}
+        run: |
+          set -euo pipefail
+          make web-check web-build
+          go build -tags "fts5 sqlite_vec" -o "$RUNNER_TEMP/msgvault-cli" ./cmd/msgvault
+          python3 - <<'PYCLI'
+          import os, pathlib, subprocess, tempfile
+          binary = str(pathlib.Path(os.environ['RUNNER_TEMP']) / 'msgvault-cli')
+          root = tempfile.mkdtemp(prefix='msgvault-cli-proof-')
+          env = dict(os.environ, HOME=root, MSGVAULT_HOME=root)
+          for args, expected in [
+              (['sync-full', '--refresh-labels', '--source-id=42', '--source-id=43'], '--source-id to appear once'),
+              (['sync-full', '--source-id=42', '--source-id=43', '--refresh-labels'], '--source-id to appear once'),
+              (['sync-full', '--refresh-labels', '--refresh-labels=false', 'reader@example.test'], '--refresh-labels must appear once'),
+          ]:
+              result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=20)
+              assert result.returncode != 0, args
+              assert expected in result.stdout + result.stderr, (args, result.stdout, result.stderr)
+          print('PASS: production CLI rejects duplicate repair selectors in either flag order')
+          PYCLI
+      - name: Check documentation
+        if: ${{ !inputs.generate_assets_only }}
+        run: make docs-check
       - name: Check repository lint
         if: ${{ !inputs.generate_assets_only }}
         run: make lint-ci
@@ -177,15 +201,36 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 332cddf207e645989436a8e73551c0db170a572b
+          ref: ${{ inputs.source_ref }}
           path: feature
           persist-credentials: false
+      - name: Apply the prepared archive probe source
+        working-directory: feature
+        env:
+          SOURCE_PATCH: ${{ inputs.source_patch }}
+          SOURCE_PATCH_SHA: ${{ inputs.source_patch_sha }}
+        run: |
+          python3 - <<'PYAPPLY'
+          import base64, gzip, hashlib, json, os, subprocess
+          encoded = os.environ['SOURCE_PATCH']
+          if encoded:
+              patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+              digest = hashlib.sha256(patch).hexdigest()
+              assert digest == os.environ['SOURCE_PATCH_SHA'], 'source patch digest mismatch'
+              subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
+          source_receipt = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'patch_sha256': os.environ['SOURCE_PATCH_SHA']}
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'archive-source.json'), 'w') as f:
+              json.dump(source_receipt, f)
+          print(json.dumps(source_receipt))
+          PYAPPLY
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: feature/go.mod
           cache: true
           cache-dependency-path: feature/go.sum
       - name: Compile the offline test driver from public source
+        env:
+          SOURCE_PATCH_SHA: ${{ inputs.source_patch_sha }}
         working-directory: feature
         run: |
           set -euo pipefail
@@ -200,6 +245,8 @@ jobs:
           artifact = root / 'archive-label-probe.test'
           receipt = {
               'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'source_tree': json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'archive-source.json').read_text())['source_tree'],
+              'patch_sha256': os.environ['SOURCE_PATCH_SHA'],
               'driver_commit': os.environ['GITHUB_SHA'],
               'driver_sha256': hashlib.sha256((root / 'scripts/label-refresh-probe/probe_test.go').read_bytes()).hexdigest(),
               'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
