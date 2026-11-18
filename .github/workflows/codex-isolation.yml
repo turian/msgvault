@@ -10,13 +10,29 @@ on:
         description: Produce canonical API assets without claiming test verification
         type: boolean
         default: false
+      source_ref:
+        description: Exact public source commit to check out
+        type: string
+        default: f9ae09ac8290a3a2ece42dd25e58f93c2d50d312
+      source_patch:
+        description: Optional gzip/base64 patch for checking a prepared merge before committing
+        type: string
+        default: ''
+      source_patch_sha:
+        description: SHA256 of the decoded patch
+        type: string
+        default: ''
+      contract_base:
+        description: Exact upstream API contract base
+        type: string
+        default: 4beb0f14982511f2cbc9bdbfef52def93ee2840a
 permissions:
   contents: read
 jobs:
   label-drift:
     if: ${{ !inputs.build_archive_probe }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17
@@ -35,19 +51,41 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: f9ae09ac8290a3a2ece42dd25e58f93c2d50d312
+          ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Apply the prepared source patch
+        env:
+          SOURCE_PATCH: ${{ inputs.source_patch }}
+          SOURCE_PATCH_SHA: ${{ inputs.source_patch_sha }}
+        run: |
+          python3 - <<'PYAPPLY'
+          import base64, gzip, hashlib, json, os, subprocess
+          encoded = os.environ['SOURCE_PATCH']
+          if encoded:
+              patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+              digest = hashlib.sha256(patch).hexdigest()
+              assert digest == os.environ['SOURCE_PATCH_SHA'], 'source patch digest mismatch'
+              subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
+          print(json.dumps({'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'patch_sha256': os.environ['SOURCE_PATCH_SHA']}))
+          PYAPPLY
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.13.0
+      - uses: step-security/setup-bun@v2.1.3
+        with:
+          bun-version-file: web/package.json
       - name: Regenerate API assets and contract marker
         env:
           GENERATE_ASSETS_ONLY: ${{ inputs.generate_assets_only }}
         run: |
           set -euo pipefail
           make api-generate
+          make web-generate
           marker_helper=internal/api/label_refresh_generation_test.go
           test ! -e "$marker_helper"
           trap 'rm -f "$marker_helper"' EXIT
@@ -74,14 +112,26 @@ jobs:
           trap - EXIT
           git add -N internal/api/testdata/api-version-contracts
           python3 - <<'PY'
-          import base64, gzip, hashlib, json, subprocess
-          paths = ['api/openapi.yaml', 'pkg/client/openapi.yaml', 'pkg/client/generated', 'internal/api/testdata/api-version-contracts']
+          import base64, gzip, hashlib, json, os, pathlib, subprocess
+          paths = ['api/openapi.yaml', 'pkg/client/openapi.yaml', 'pkg/client/generated', 'web/src/lib/api/generated', 'internal/api/testdata/api-version-contracts']
           patch = subprocess.check_output(['git', 'diff', '--binary', '--'] + paths)
-          print(json.dumps({'msgvault_generated_patch': base64.b64encode(gzip.compress(patch)).decode(), 'sha256': hashlib.sha256(patch).hexdigest()}))
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'label-refresh-generated'
+          target.mkdir()
+          (target / 'generated.patch').write_bytes(patch)
+          receipt = {'base_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'generated_patch_sha256': hashlib.sha256(patch).hexdigest()}
+          (target / 'receipt.json').write_text(json.dumps(receipt, indent=2))
+          print(json.dumps(receipt))
           PY
           if [ "$GENERATE_ASSETS_ONLY" != "true" ]; then
-            git diff --exit-code -- api/openapi.yaml pkg/client/openapi.yaml pkg/client/generated internal/api/testdata/api-version-contracts
+            git diff --exit-code -- api/openapi.yaml pkg/client/openapi.yaml pkg/client/generated web/src/lib/api/generated internal/api/testdata/api-version-contracts
           fi
+      - name: Save canonical generated changes
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: label-refresh-generated
+          path: ${{ runner.temp }}/label-refresh-generated
+          retention-days: 3
+          if-no-files-found: error
       - name: Check formatting and static analysis
         if: ${{ !inputs.generate_assets_only }}
         run: |
@@ -93,8 +143,8 @@ jobs:
       - name: Check Gmail refresh, recovery, daemon, CLI and cache journeys
         if: ${{ !inputs.generate_assets_only }}
         env:
-          MSGVAULT_API_CONTRACT_BASE: 9d0b00b3798ed05483d42363064da8322c5da8f3
-        run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
+          MSGVAULT_API_CONTRACT_BASE: ${{ inputs.contract_base }}
+        run: go test -tags "fts5 sqlite_vec" ./internal/sync ./internal/api ./internal/daemonclient ./cmd/msgvault/cmd -run '^(TestGmail.*|TestRunScheduledIMAPSync_AllMailCombinedRolesKeepTrashMark|TestHandleCLISync.*|TestRunCLISync.*|TestSyncFull.*|TestCLISyncSubprocess.*|TestCacheNeedsBuildTracksCoveredRelatedRows|TestAPISchemaVersionContract|TestSyncResumeCommandNativeArguments)$' -count=1 -v
       - name: Check repository lint
         if: ${{ !inputs.generate_assets_only }}
         run: make lint-ci
