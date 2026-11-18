@@ -169,12 +169,21 @@ jobs:
               assert expected in result.stdout + result.stderr, (args, result.stdout, result.stderr)
           print('PASS: production CLI rejects duplicate repair selectors in either flag order')
           PYCLI
+      - uses: kenn-io/kit/.github/actions/kit-retry@v0.53.2
+        if: ${{ !inputs.generate_assets_only }}
+      - name: Install documentation prerequisites
+        if: ${{ !inputs.generate_assets_only }}
+        run: |
+          kit-retry 3 5 sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o APT::Update::Error-Mode=any update
+          kit-retry 3 5 sudo apt-get install -y ripgrep
       - uses: astral-sh/setup-uv@v10.3.3
         if: ${{ !inputs.generate_assets_only }}
         with:
           save-cache: false
       - name: Check documentation
         if: ${{ !inputs.generate_assets_only }}
+        env:
+          DOWNLOAD_RETRY: kit-retry 3 5
         run: make docs-check
       - name: Check repository lint
         if: ${{ !inputs.generate_assets_only }}
