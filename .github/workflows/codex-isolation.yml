@@ -169,6 +169,10 @@ jobs:
               assert expected in result.stdout + result.stderr, (args, result.stdout, result.stderr)
           print('PASS: production CLI rejects duplicate repair selectors in either flag order')
           PYCLI
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: ${{ !inputs.generate_assets_only }}
+        with:
+          save-cache: false
       - name: Check documentation
         if: ${{ !inputs.generate_assets_only }}
         run: make docs-check

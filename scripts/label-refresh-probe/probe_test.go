@@ -271,7 +271,7 @@ func TestOwnedArchiveLabelRefresh(t *testing.T) {
 	require.Equal(t, 6, transport.listings)
 	require.Zero(t, transport.forbidden)
 	require.False(t, t.Failed(), "all probe invariants must pass before writing a success receipt")
-	report := map[string]any{"result": "PASS", "source_commit": "332cddf207e645989436a8e73551c0db170a572b", "owned_messages": 4, "deliberate_mismatches": 3, "ordinary_full_mismatches_remaining": 3, "refresh_changed_memberships": 3, "second_refresh_changes": 0, "metadata_requests": transport.metadata, "listing_requests": transport.listings, "raw_requests": 0, "history_requests": 0, "unexpected_requests": transport.forbidden, "raw_hashes_preserved": true, "cursor_preserved": true, "provider_responses": "controlled offline", "cli_daemon_path_exercised": false, "whole_archive_migration_exercised": false}
+	report := map[string]any{"result": "PASS", "owned_messages": 4, "deliberate_mismatches": 3, "ordinary_full_mismatches_remaining": 3, "refresh_changed_memberships": 3, "second_refresh_changes": 0, "metadata_requests": transport.metadata, "listing_requests": transport.listings, "raw_requests": 0, "history_requests": 0, "unexpected_requests": transport.forbidden, "raw_hashes_preserved": true, "cursor_preserved": true, "provider_responses": "controlled offline", "cli_daemon_path_exercised": false, "whole_archive_migration_exercised": false}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "result-private.json"), encoded, 0600))
