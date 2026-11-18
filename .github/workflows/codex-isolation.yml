@@ -67,7 +67,10 @@ jobs:
               digest = hashlib.sha256(patch).hexdigest()
               assert digest == os.environ['SOURCE_PATCH_SHA'], 'source patch digest mismatch'
               subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
-          print(json.dumps({'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'patch_sha256': os.environ['SOURCE_PATCH_SHA']}))
+          source_receipt = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'patch_sha256': os.environ['SOURCE_PATCH_SHA']}
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'label-source.json'), 'w') as f:
+              json.dump(source_receipt, f)
+          print(json.dumps(source_receipt))
           PYAPPLY
       - uses: actions/setup-go@v7.0.0
         with:
@@ -118,7 +121,7 @@ jobs:
           target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'label-refresh-generated'
           target.mkdir()
           (target / 'generated.patch').write_bytes(patch)
-          receipt = {'base_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': subprocess.check_output(['git', 'write-tree'], text=True).strip(), 'generated_patch_sha256': hashlib.sha256(patch).hexdigest()}
+          receipt = {'base_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'source_tree': json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'label-source.json').read_text())['source_tree'], 'generated_patch_sha256': hashlib.sha256(patch).hexdigest()}
           (target / 'receipt.json').write_text(json.dumps(receipt, indent=2))
           print(json.dumps(receipt))
           PY
