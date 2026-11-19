@@ -1,5 +1,5 @@
 ---
-last_edited: "2026-11-14"
+last_edited: "2026-11-18"
 title: CLI Reference
 description: Complete command reference for all msgvault commands.
 ---
@@ -17,7 +17,7 @@ appear in full under Inherited Flags.
 | Task | Commands and guides |
 |---|---|
 | Add and sync a source | [Choose a source](guides/sources.md), [sync](#sync), [sync-full](#sync-full), [source feeds add](#source-feeds-add) |
-| Import local exports | [import-ics](#import-ics), [import-eml](#import-eml), [import-mbox](#import-mbox), [import-maildir](#import-maildir), [import-emlx](#import-emlx), [import-pst](#import-pst), [import-slackdump](#import-slackdump), [import-telegram](#import-telegram), [import-discord-package](#import-discord-package), [import-x](#import-x), [import-imazing-csv](#import-imazing-csv), [text imports](usage/text-messages.md) |
+| Import local exports | [import-ics](#import-ics), [import-eml](#import-eml), [import-mbox](#import-mbox), [import-maildir](#import-maildir), [import-emlx](#import-emlx), [import-pst](#import-pst), [import-slackdump](#import-slackdump), [import-telegram](#import-telegram), [import-discord-package](#import-discord-package), [import-linkedin](#import-linkedin), [import-tiktok](#import-tiktok), [import-x](#import-x), [import-imazing-csv](#import-imazing-csv), [text imports](usage/text-messages.md) |
 | Search and browse | [search](#search), [find-chat](#find-chat), [tui](#tui), [show-message](#show-message), [media search](#media-search), [embeddings](#embeddings), [multimodal](#multimodal), [eval](#eval) |
 | Maintain people and contacts | [loops](#loops), [person](#person), [people guide](usage/people.md), [CardDAV](usage/people-carddav.md) |
 | Edit live email tags | [message-tags](#message-tags) |
@@ -179,6 +179,7 @@ when continuing a page; refresh from page one to see newer evidence.
 | `--home` | Home directory for all data (overrides `MSGVAULT_HOME`) |
 | `-v`, `--verbose` | Verbose output (implies `--log-level=debug`) |
 | `--local` | Use the local daemon instead of a configured remote for archive-access commands |
+| `--remote <name>` | Use the named remote from a [`[remotes.<name>]`](configuration.md#remotesname) table instead of `[remote]` |
 | `--log-file <path>` | Override log file path (default: `<data_dir>/logs/msgvault-YYYY-MM-DD.log`) |
 | `--log-level <level>` | Log level: `debug`, `info`, `warn`, `error` (default: `info`) |
 | `--no-log-file` | Disable file logging for this run (stderr output stays on) |
@@ -195,7 +196,7 @@ when continuing a page; refresh from page one to see newer evidence.
 
 Commands that access archive state keep their usual stdout/stderr output while using the same API path as remote access:
 
-1. If `[remote].url` is configured and `--local` is not passed, the CLI talks to that remote server.
+1. If `[remote].url` is configured and `--local` is not passed, the CLI talks to that remote server. `--remote <name>` selects a named remote instead.
 2. Otherwise, archive-access commands discover or start the local background daemon and talk to it over HTTP. With `[server].daemon_auto_start = false`, they use a daemon that is already running or starting and never start one.
 3. `--local` selects the local daemon even when `[remote].url` is configured; it is not a request to open SQLite in the CLI process.
 4. With both `--agent-url` and `--agent-token-file`, the CLI connects to a
@@ -204,7 +205,7 @@ Commands that access archive state keep their usual stdout/stderr output while u
    `draft-delete`, and `draft-recover` are available with their required
    permissions (see [scoped archive reads](#scoped-archive-reads) and
    [managed drafts](#draft-get-draft-edit-draft-delete-and-draft-recover)). The CLI rejects owner
-   configuration (`--config`, `--home`, `--local`) and never writes the token
+   configuration (`--config`, `--home`, `--local`, `--remote`) and never writes the token
    to logs or argv. It sends the token in the `X-Msgvault-Agent-Token` header;
    generated OpenAPI clients do not model this transport detail.
 
@@ -893,6 +894,7 @@ msgvault sync-full [account] [flags]
 | `--before YYYY-MM-DD` | Only messages before this date |
 | `--query` | Gmail search query filter |
 | `--noresume` | Ignore checkpoints, start fresh |
+| `--refresh-labels` | Refresh archived labels for one explicitly selected, unrestricted Gmail source |
 | `--folder NAME` | Scan this IMAP folder (repeatable) |
 | `--skip-folder NAME` | Skip this IMAP folder (repeatable) |
 | `--source-id ID` | Sync exactly one source by numeric ID; mutually exclusive with the account argument |
@@ -919,6 +921,46 @@ set. This is especially important with `--query`, `--limit`, or date filters,
 where the listing is intentionally incomplete. Gmail source-deletion
 reconciliation happens only during the complete mailbox recovery described
 under [`sync`](#sync).
+
+### Refresh archived Gmail labels
+
+Use this when historical labels may be stale even though ordinary sync is up
+to date:
+
+```bash
+msgvault sync-full account@example.com --refresh-labels
+msgvault sync-full --source-id 42 --refresh-labels
+```
+
+Select exactly one configured Gmail source. An ambiguous account name requires
+`--source-id`. The option rejects query, date and folder filters, and any
+positive `--limit`. Explicitly supplied empty filters are also rejected.
+
+The scan replaces the labels of archived messages from lightweight provider
+metadata, including an empty label set. It does not download archived
+originals again. It downloads only archived messages whose original is missing
+and messages whose earlier download failed. Mail the archive never held, such
+as mail outside an earlier `--after` filter, is skipped; run `sync-full`
+without `--refresh-labels` to archive it. The usual post-sync cache refresh
+publishes label changes; `--no-build-cache` still skips that refresh.
+
+The scan preserves the consumed History cursor. It does not consume History or
+infer deletion from absence. Later ordinary sync replays available changes from
+that cursor, including new mail and deletions during the scan. A message
+deleted from Gmail while the scan runs keeps its archived labels until that
+later sync processes the deletion.
+Labels are read message by message, not as one atomic mailbox snapshot.
+
+Metadata errors, a label created in Gmail after the scan started, or a failed
+label or checkpoint save stop the scan. Labels already saved stay saved. Run
+the same command again to continue from the failed page with Gmail's current
+labels; `--noresume` starts the refresh from the beginning. A refresh never
+resumes an interrupted ordinary `sync-full`; it starts its own scan.
+
+Already-pending History recovery takes precedence and is reported in the sync
+log. It retains its broader recovery phases, including absence reconciliation
+and History catch-up. The label-refresh option requires daemon API schema 5.20.0
+or newer; an older daemon fails explicitly instead of silently skipping refresh.
 
 ### Gmail Spam and Trash coverage
 
@@ -2789,6 +2831,26 @@ are stored as links. Re-running is safe and resumes an interrupted import. See
 [Discord packages](usage/discord.md#import-a-personal-data-package) for
 requirements and limits.
 
+## import-linkedin
+
+Import a LinkedIn member data export ZIP or extracted folder:
+
+```bash
+msgvault import-linkedin <identifier> <archive> --me <profile-url>
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--me` | (required) | Your LinkedIn member profile URL |
+| `--display-name` | | Your display name for posts and comments |
+| `--include-drafts` | `false` | Include unsent message drafts |
+| `--json` | `false` | Print the import summary as JSON |
+
+Imports DMs and your own posts and comments; `Connections.csv` adds people
+without creating messages. Attachment URLs are stored as links. Use the same
+identifier for newer exports. See [LinkedIn import](usage/linkedin.md) for
+supported files and limits.
+
 ## import-telegram
 
 Import a Telegram Desktop Machine-readable JSON export, including available media.
@@ -3309,7 +3371,9 @@ msgvault export-messages \
 | `--format` | `jsonl` | Output format; v1 accepts only `jsonl` |
 
 `--start` and `--end` are required. Missing bounds fail before contacting the
-daemon. For an account selector, combine its `type` and `email` from
+daemon. Against a remote, the export streams from the server and needs server
+schema 5.19.0 or later; it works with [read-only remote
+client](guides/remote-deployment.md#read-only-remote-clients) keys. For an account selector, combine its `type` and `email` from
 `msgvault list-accounts --json`, for example `--source mbox:you@example.com`.
 
 Use `--person-id N` to export messages involving a durable person's bound
@@ -3320,7 +3384,8 @@ keeping the address unchanged.
 The stream schema is `msgvault-message-export/1`. Records appear as one
 manifest, all sources, all conversations, all messages, and one completion
 record with counts. A missing completion record means the stream is partial
-and must be rejected. Stdout contains JSONL only; diagnostics use stderr.
+and must be rejected; the command then exits nonzero. Stdout contains JSONL
+only; diagnostics use stderr.
 
 See [Exporting Data](/docs/usage/exporting/) for the full record, identity, ordering,
 and validation contract.
@@ -3540,17 +3605,18 @@ JSON always includes these integer counts, even when zero:
 The CLI's `total_messages` includes active and source-deleted messages. The
 daemon HTTP API retains its legacy active-only `total_messages` for compatibility.
 
-The `scope` object identifies `kind` as `archive`, `account`, `collection`, or
-`agent_grant`. Its `source_count` equals `total_accounts`; both count source
+The `scope` object identifies `kind` as `archive`, `account`, `collection`,
+`agent_grant`, or `authorized_sources`. Its `source_count` equals `total_accounts`; both count source
 records, including associated calendar sources and sources with no messages.
 One account can span multiple source records. Scoped results include a `label`
 when available. Without an explicit account or collection, delegated reads use
 `agent_grant` and count only granted sources, including a zero count when none
-remain.
+remain. A remote whose host limits it to some sources, such as one that uses a
+credential helper, reports `authorized_sources` and counts only those sources.
 
 Owner reads include `database_size_bytes`, even when zero, with
 `database_size_scope: "global"`. Size remains global with `--account` or
-`--collection`. Delegated reads omit both size fields. JSON contains no database
+`--collection`. Delegated and source-limited reads omit both size fields. JSON contains no database
 path or server URL. `--json=false` selects text output.
 
 For custom structured counts, use:
@@ -3951,7 +4017,7 @@ msgvault person merge-show <merge-id> [--snapshot] [--json]
 msgvault person merge-candidate <candidate-id> [flags]
 
 msgvault person attributes list <person-id> [--slug <slug>] [--history] [--json]
-msgvault person attributes set <person-id> <slug> (--value <scalar> | --value-json <json|@path|->) [flags]
+msgvault person attributes set <person-id> <slug> (--value <scalar> | --value-json <json|@path|-> | --list A|B|C|D) [flags]
 msgvault person attributes clear <person-id> <slug> [flags]
 ```
 
@@ -4129,6 +4195,8 @@ msgvault person directory --address alex@example.test
 msgvault person directory --last-contact-after 2026-06-01 --last-contact-before 2026-07-01 --json
 msgvault person directory --sort last_contact_asc
 msgvault person directory --sort name
+msgvault person directory --cadence overdue --sort most_overdue
+msgvault person directory --cadence due --due-within-days 7 --sort next_due
 msgvault person directory --last-contact-after 2026-06-01 --cursor "<next_cursor>"
 ```
 
@@ -4138,7 +4206,9 @@ msgvault person directory --last-contact-after 2026-06-01 --cursor "<next_cursor
 | `--address <text>` | absent | Literal, case-insensitive substring of current bound participant addresses/identifiers or curated contact points |
 | `--last-contact-after <date>` | absent | Inclusive lower bound, `YYYY-MM-DD` or RFC3339 |
 | `--last-contact-before <date>` | absent | Inclusive upper bound, `YYYY-MM-DD` or RFC3339 |
-| `--sort <order>` | `last_contact_desc` | `name`, `last_contact_desc`, or `last_contact_asc` |
+| `--sort <order>` | `last_contact_desc` | `name`, `last_contact_desc`, `last_contact_asc`, `most_overdue`, or `next_due` |
+| `--cadence <filter>` | absent | `overdue`, `due`, `no_list`, or `unknown` |
+| `--due-within-days <days>` | `0` | Inclusive UTC horizon 0..3660; requires `--cadence due` |
 | `--cursor <cursor>` | absent | Opaque `next_cursor` from the previous page |
 | `--json` | `false` | Output the full Directory page envelope |
 
@@ -4148,7 +4218,7 @@ All filters intersect. `%`, `_`, and backslash in `--address` are ordinary chara
 
 Sparse or no-match address-only lookups can scan the full saved directory. Remote PostgreSQL connections can add network latency to these database round trips. Combine `--query` with `--address` when you know a name or organization to narrow the candidates first.
 
-Human output shows `ID`, `DISPLAY NAME`, and `LAST CONTACT` in daemon order. Timestamps use UTC RFC3339 at seconds precision; JSON preserves fractional seconds. Missing display names and timestamps show `-`. A page with more results prints `Next cursor`. Pass that value unchanged to `--cursor` and repeat the same query, address, bounds, and sort to continue.
+Human output shows `ID`, `DISPLAY NAME`, `LIST`, `LAST CONTACT`, `DUE`, and `STATUS` in daemon order. The list column shows a preset letter or a custom day interval. Timestamps use UTC RFC3339 at seconds precision; JSON preserves fractional seconds. Missing display names and timestamps show `-`. A page with more results prints `Next cursor`. Pass that value unchanged to `--cursor` and repeat the same query, address, bounds, and sort to continue.
 
 JSON contains a `people` array and optional `next_cursor`. Each person retains the Directory fields, including categories, organizations, contact state, ID, revision, `vcard_uid`, and `carddav_bindings`. Optional fields stay absent when the daemon omits them, including `last_contact_at` for people without a contact timestamp. `person list` continues to return the full unpaginated profile collection, with its existing human columns and JSON array output.
 
@@ -6161,6 +6231,23 @@ msgvault policy reset SOURCE_ID CONVERSATION_ID
 `list` always prints JSON. Saved CLI overrides win over config. `reset` restores
 config or automatic selection. Effective tiers remain `full` in this release;
 `stub` and `skip` are rejected. No messages are removed.
+
+## import-tiktok
+
+Import a TikTok "Download your data" ZIP or extracted folder:
+
+```bash
+msgvault import-tiktok <identifier> <archive>
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Print the import summary as JSON |
+
+Imports DMs and your own comments. Include Profile Information in the export
+so your own messages count as sent by you. Shared post and media URLs are
+stored as links. See [TikTok export import](usage/tiktok-export.md) for
+accepted layouts and limits.
 
 ## import-x
 

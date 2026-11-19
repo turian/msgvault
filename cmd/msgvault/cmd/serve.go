@@ -32,6 +32,7 @@ import (
 	"go.kenn.io/msgvault/internal/config"
 	"go.kenn.io/msgvault/internal/deletion"
 	"go.kenn.io/msgvault/internal/discord"
+	"go.kenn.io/msgvault/internal/export"
 	"go.kenn.io/msgvault/internal/gcal"
 	"go.kenn.io/msgvault/internal/gmail"
 	"go.kenn.io/msgvault/internal/granola"
@@ -285,11 +286,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 	telemetryReporter := telemetry.NewReporterOrDisabled(telemetry.Options{
 		DataDir: cfg.Data.DataDir, Version: Version, Commit: Commit,
-	}, logger)
+	})
 	defer func() {
-		if err := telemetryReporter.Close(); err != nil {
-			logger.Warn("close telemetry reporter", "error", err)
-		}
+		_ = telemetryReporter.Close()
 	}()
 	setStartupPhase := func(phase string) {
 		if err := ownership.SetStartupPhase(phase); err != nil {
@@ -2041,6 +2040,11 @@ func (a *storeAPIAdapter) invocationContext(ctx context.Context) context.Context
 	return withInvocation(ctx, state)
 }
 
+// OpenMessageExport serves GET /api/v1/cli/messages/export.
+func (a *storeAPIAdapter) OpenMessageExport(ctx context.Context, request export.MessagesRequest) (*export.MessagesExport, error) {
+	return export.OpenMessages(ctx, a.store, request)
+}
+
 func (a *storeAPIAdapter) GrantPersonMatchConsentContext(ctx context.Context, disclosure personmatch.Disclosure, actor string, mutationGate func(context.Context) (func(), error)) (*store.PersonMatchConsent, bool, error) {
 	return a.store.GrantPersonMatchConsentContext(ctx, disclosure, actor, mutationGate)
 }
@@ -2578,6 +2582,9 @@ func cliSyncSubprocessArgs(req api.CLISyncRequest) []string {
 		}
 		if req.NoResume {
 			args = append(args, "--noresume")
+		}
+		if req.RefreshLabels {
+			args = append(args, "--refresh-labels")
 		}
 		if req.Before != "" {
 			args = append(args, "--before", req.Before)

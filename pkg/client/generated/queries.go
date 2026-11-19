@@ -303,6 +303,27 @@ type GetCLIMessageThreadQuery struct {
 	Offset *int64 `json:"offset,omitempty"`
 }
 
+type ExportCLIMessagesQuery struct {
+	// Start Inclusive RFC3339 lower bound
+	Start string `json:"start" validate:"required"`
+
+	// End Exclusive RFC3339 upper bound
+	End string `json:"end" validate:"required"`
+
+	// MessageType Exact message type to include (repeatable)
+	MessageType []string `json:"message_type,omitempty"`
+
+	// Source Source selector type:identifier from list-accounts (repeatable)
+	Source []string `json:"source,omitempty"`
+
+	// PersonID Export messages for the durable person's bound participants
+	PersonID *int64 `json:"person_id,omitempty"`
+}
+
+func (e ExportCLIMessagesQuery) Validate() error {
+	return runtime.ConvertValidatorError(typesValidator.Struct(e))
+}
+
 type SearchCLIQuery struct {
 	// IncludeSnippet Include attachment names and bounded FTS match context
 	IncludeSnippet *bool `json:"include_snippet,omitempty"`
@@ -388,6 +409,9 @@ type SyncFullCLIQuery struct {
 
 	// Noresume Ignore checkpoints and start fresh
 	Noresume *bool `json:"noresume,omitempty"`
+
+	// RefreshLabels Refresh archived labels for one unrestricted Gmail source
+	RefreshLabels *bool `json:"refresh_labels,omitempty"`
 
 	// Folder IMAP folder names to include (repeatable)
 	Folder []string `json:"folder,omitempty"`
@@ -970,7 +994,13 @@ type ListDirectoryPeopleQuery struct {
 	// LastContactBefore Return people contacted at or before this RFC3339 timestamp
 	LastContactBefore *time.Time `json:"last_contact_before,omitempty"`
 
-	// Sort Directory order: name, last_contact_desc, or last_contact_asc
+	// Cadence Cadence filter: overdue, due (includes overdue), no_list, or unknown
+	Cadence *string `json:"cadence,omitempty"`
+
+	// DueWithinDays UTC days ahead for cadence=due, 0..3660 (default 0)
+	DueWithinDays *int64 `json:"due_within_days,omitempty"`
+
+	// Sort Directory order: name, last_contact_desc, last_contact_asc, most_overdue, or next_due
 	Sort *ListDirectoryPeopleQuerySort `json:"sort,omitempty"`
 }
 

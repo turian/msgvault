@@ -23,6 +23,7 @@ import (
 	"go.kenn.io/msgvault/internal/collectionops"
 	"go.kenn.io/msgvault/internal/contentverify"
 	"go.kenn.io/msgvault/internal/deletion"
+	"go.kenn.io/msgvault/internal/export"
 	"go.kenn.io/msgvault/internal/httpretry"
 	"go.kenn.io/msgvault/internal/identityops"
 	"go.kenn.io/msgvault/internal/jsonexact"
@@ -43,19 +44,20 @@ type CLIStats struct {
 type CLICacheStats = cacheops.CacheStats
 
 type CLISyncRequest struct {
-	Full         bool
-	BuildCache   bool
-	NoBuildCache bool
-	Email        string
-	SourceID     int64
-	SourceIDSet  bool
-	Query        string
-	NoResume     bool
-	Before       string
-	After        string
-	Limit        int
-	Folders      []string
-	SkipFolders  []string
+	Full          bool
+	BuildCache    bool
+	NoBuildCache  bool
+	Email         string
+	SourceID      int64
+	SourceIDSet   bool
+	Query         string
+	NoResume      bool
+	RefreshLabels bool
+	Before        string
+	After         string
+	Limit         int
+	Folders       []string
+	SkipFolders   []string
 }
 
 type CLIVerifyRequest struct {
@@ -445,6 +447,18 @@ func (c *Client) RunCLISync(
 	req CLISyncRequest,
 	output func(stream, data string) error,
 ) error {
+	if req.RefreshLabels {
+		if !req.Full {
+			return errors.New("label refresh requires a full sync")
+		}
+		version, err := c.APISchemaVersion(ctx)
+		if err != nil {
+			return fmt.Errorf("check daemon label refresh capability: %w", err)
+		}
+		if !apiSchemaVersionAtLeast(version, RefreshLabelsMinAPISchemaVersion) {
+			return fmt.Errorf("label refresh requires daemon API schema %s or newer (daemon reports %q); upgrade the daemon", RefreshLabelsMinAPISchemaVersion, version)
+		}
+	}
 	if req.BuildCache || req.NoBuildCache {
 		version, err := c.APISchemaVersion(ctx)
 		if err != nil {
@@ -467,17 +481,18 @@ func (c *Client) RunCLISync(
 		path = "/api/v1/cli/sync-full"
 		return c.runCLIStream(ctx, path, "sync", &generated.SyncFullCLIRequestOptions{
 			Query: &generated.SyncFullCLIQuery{
-				BuildCache:   optionalBool(req.BuildCache),
-				NoBuildCache: optionalBool(req.NoBuildCache),
-				Email:        optionalString(req.Email),
-				SourceID:     optionalCLIIdentitySourceID(req.SourceID, req.SourceIDSet),
-				Query:        optionalString(req.Query),
-				Noresume:     optionalBool(req.NoResume),
-				Before:       optionalString(req.Before),
-				After:        optionalString(req.After),
-				Limit:        optionalPositiveInt64(req.Limit),
-				Folder:       req.Folders,
-				SkipFolder:   req.SkipFolders,
+				BuildCache:    optionalBool(req.BuildCache),
+				NoBuildCache:  optionalBool(req.NoBuildCache),
+				Email:         optionalString(req.Email),
+				SourceID:      optionalCLIIdentitySourceID(req.SourceID, req.SourceIDSet),
+				Query:         optionalString(req.Query),
+				Noresume:      optionalBool(req.NoResume),
+				RefreshLabels: optionalBool(req.RefreshLabels),
+				Before:        optionalString(req.Before),
+				After:         optionalString(req.After),
+				Limit:         optionalPositiveInt64(req.Limit),
+				Folder:        req.Folders,
+				SkipFolder:    req.SkipFolders,
 			},
 		}, output)
 	}
@@ -492,6 +507,10 @@ func (c *Client) RunCLISync(
 		},
 	}, output)
 }
+
+// RefreshLabelsMinAPISchemaVersion prevents older daemons from silently
+// ignoring the label-refresh option and running acquire-only full sync.
+const RefreshLabelsMinAPISchemaVersion = "5.20.0"
 
 const (
 	sourceIDSyncMinAPISchemaVersion    = "2.4.0"
@@ -1701,4 +1720,31 @@ func (c *Client) messageSummariesWithURLs(ctx context.Context, messages []genera
 		result[i].WebURL = c.messageWebURL(ctx, result[i].ID)
 	}
 	return result
+}
+
+// OpenMessageExport streams msgvault-message-export/1 JSON Lines for the
+// request. The caller closes the body; a stream without the completion record
+// is truncated.
+func (c *Client) OpenMessageExport(ctx context.Context, request export.MessagesRequest) (io.ReadCloser, error) {
+	query := &generated.ExportCLIMessagesQuery{
+		Start:       request.Start.Format(time.RFC3339Nano),
+		End:         request.End.Format(time.RFC3339Nano),
+		MessageType: request.MessageTypes,
+	}
+	for _, selector := range request.Sources {
+		query.Source = append(query.Source, selector.SourceType+":"+selector.Identifier)
+	}
+	if request.PersonID != nil {
+		query.PersonID = request.PersonID
+	}
+	resp, err := c.DoGeneratedRequestWithContext(ctx, http.MethodGet, "/api/v1/cli/messages/export",
+		&generated.ExportCLIMessagesRequestOptions{Query: query})
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, HandleErrorResponse(resp)
+	}
+	return resp.Body, nil
 }
